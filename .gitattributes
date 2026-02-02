@@ -1,0 +1,33 @@
+# Cannabis Results Repository
+# Git LFS Configuration for HuggingFace
+
+# Force LF line endings for text files
+* text=auto eol=lf
+
+# === Data Files (tracked by Git LFS on HuggingFace) ===
+*.csv filter=lfs diff=lfs merge=lfs -text
+*.xlsx filter=lfs diff=lfs merge=lfs -text
+*.parquet filter=lfs diff=lfs merge=lfs -text
+*.json filter=lfs diff=lfs merge=lfs -text
+*.jsonl filter=lfs diff=lfs merge=lfs -text
+
+# === Raw Data Files ===
+*.pdf filter=lfs diff=lfs merge=lfs -text
+*.zip filter=lfs diff=lfs merge=lfs -text
+*.gz filter=lfs diff=lfs merge=lfs -text
+
+# === Images ===
+*.png filter=lfs diff=lfs merge=lfs -text
+*.jpg filter=lfs diff=lfs merge=lfs -text
+*.jpeg filter=lfs diff=lfs merge=lfs -text
+
+# === Ensure consistent line endings for code ===
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.csv text eol=lf
+*.gitignore text eol=lf
+*.gitattributes text eol=lf

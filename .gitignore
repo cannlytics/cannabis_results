@@ -1,0 +1,79 @@
+# Cannabis Results Repository
+# Dual GitHub/HuggingFace Version Control
+
+# === Environment Variables ===
+*.env
+*docker.env
+*env.yaml
+.env.local
+.env.*.local
+
+# === Secrets and Keys ===
+*.pem
+*.key
+secrets/
+
+# === Datasets ===
+data/
+raw/
+
+# === Test and Temporary Data ===
+*.datasets
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+
+# === OS Files ===
+*.DS_Store
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === Compiled Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# === Virtual Environments ===
+venv/
+.venv/
+env/
+ENV/
+
+# === IDE and Editor ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# === Caches ===
+*.cache
+.cache/
+cache/
+.pytest_cache/
+.mypy_cache/
+
+# === Jupyter ===
+.ipynb_checkpoints/
+
+# === Logs ===
+*.log
+logs/
+
+# === GitHub-Specific Exclusions ===
+# Data files tracked by HuggingFace LFS, not GitHub
+# Uncomment for GitHub-only usage:
+# data/**/*.csv
+# data/**/*.xlsx
+# data/**/*.parquet
+# raw/**/*.pdf
