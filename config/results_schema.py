@@ -5,8 +5,8 @@ Copyright (c) 2024-2026 Cannlytics
 Authors:
     Keegan Skeate <https://github.com/keeganskeate>
 Created: 2/1/2026
-Updated: 2/1/2026
-License: <https://github.com/cannlytics/cannlytics/blob/main/LICENSE>
+Updated: 2/2/2026
+License: CC-BY-4.0 <https://creativecommons.org/licenses/by/4.0/>
 
 Description:
     Standardized field definitions for all lab results.
@@ -327,7 +327,22 @@ def normalize_product_type(product_type: Any) -> Optional[str]:
     if product_type is None:
         return None
     
-    from .results_config import PRODUCT_TYPES
+    # Import here to avoid circular imports
+    try:
+        from config.results_config import PRODUCT_TYPES
+    except ImportError:
+        # Fallback mapping if config not available
+        PRODUCT_TYPES = {
+            'flower': ['flower', 'bud', 'buds', 'cannabis flower', 'dried flower', 'trim', 'shake'],
+            'preroll': ['preroll', 'pre-roll', 'joint', 'blunt', 'prerolls', 'pre-rolls', 'infused preroll'],
+            'concentrate': ['concentrate', 'extract', 'wax', 'shatter', 'rosin', 'live resin', 
+                           'budder', 'badder', 'sauce', 'diamonds', 'sugar', 'crumble'],
+            'vape': ['vape', 'cartridge', 'cart', 'vaporizer', 'pod', 'disposable', 'aio'],
+            'edible': ['edible', 'gummy', 'chocolate', 'beverage', 'candy', 'baked goods', 
+                      'capsule', 'tablet'],
+            'tincture': ['tincture', 'oil', 'drops', 'sublingual', 'rso'],
+            'topical': ['topical', 'cream', 'lotion', 'balm', 'salve', 'transdermal'],
+        }
     
     pt_lower = str(product_type).lower().strip()
     
@@ -364,8 +379,10 @@ class ResultDetail:
 
 # === Standard Analyte Keys ===
 # Mapping of common variations to standard keys
+# NOTE: The normalize_analyte_key function converts hyphens to underscores BEFORE lookup,
+# so we include BOTH hyphen and underscore versions for proper matching.
 ANALYTE_KEYS = {
-    # Cannabinoids
+    # Cannabinoids - hyphen versions
     'thc': 'delta_9_thc',
     'd9thc': 'delta_9_thc',
     'delta-9-thc': 'delta_9_thc',
@@ -379,7 +396,14 @@ ANALYTE_KEYS = {
     'cannabidiol': 'cbd',
     'cannabigerol': 'cbg',
     
-    # Terpenes
+    # Cannabinoids - underscore versions (after hyphen replacement)
+    'delta_9_thc': 'delta_9_thc',
+    'delta_8_thc': 'delta_8_thc',
+    'thca_a': 'thca',
+    'thc_a': 'thca',
+    'cbd_a': 'cbda',
+    
+    # Terpenes - hyphen versions (original input)
     'myrcene': 'beta_myrcene',
     'b-myrcene': 'beta_myrcene',
     'limonene': 'd_limonene',
@@ -390,17 +414,42 @@ ANALYTE_KEYS = {
     'b-pinene': 'beta_pinene',
     'a-humulene': 'alpha_humulene',
     'humulene': 'alpha_humulene',
+    
+    # Terpenes - underscore versions (after hyphen replacement)
+    'b_myrcene': 'beta_myrcene',
+    'd_limonene': 'd_limonene',
+    'b_caryophyllene': 'beta_caryophyllene',
+    'a_pinene': 'alpha_pinene',
+    'b_pinene': 'beta_pinene',
+    'a_humulene': 'alpha_humulene',
+    
+    # Additional common variations
+    'beta_myrcene': 'beta_myrcene',
+    'beta_caryophyllene': 'beta_caryophyllene',
+    'alpha_pinene': 'alpha_pinene',
+    'alpha_humulene': 'alpha_humulene',
 }
 
 
 def normalize_analyte_key(key: str) -> str:
     """Normalize an analyte key to standard format.
     
+    Converts spaces and hyphens to underscores, lowercases,
+    then looks up in ANALYTE_KEYS mapping.
+    
     Args:
         key: Raw analyte key from source.
         
     Returns:
         Standardized analyte key.
+        
+    Examples:
+        >>> normalize_analyte_key('THC')
+        'delta_9_thc'
+        >>> normalize_analyte_key('b-myrcene')
+        'beta_myrcene'
+        >>> normalize_analyte_key('B-Myrcene')
+        'beta_myrcene'
     """
     key_lower = str(key).lower().strip().replace(' ', '_').replace('-', '_')
     return ANALYTE_KEYS.get(key_lower, key_lower)
@@ -437,3 +486,8 @@ if __name__ == '__main__':
     # Test normalization
     print(f"Status normalize: {normalize_status('PASSED')}")
     print(f"Product type normalize: {normalize_product_type('Pre-Roll')}")
+    
+    # Test analyte key normalization
+    test_keys = ['THC', 'b-myrcene', 'B-Myrcene', 'd-limonene', 'myrcene']
+    for key in test_keys:
+        print(f"Analyte normalize: '{key}' -> '{normalize_analyte_key(key)}'")

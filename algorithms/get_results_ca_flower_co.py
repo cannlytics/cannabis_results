@@ -1,39 +1,74 @@
 """
 Get Results | California | Flower Company
-Copyright (c) 2023-2024 Cannlytics
+Copyright (c) 2023-2026 Cannlytics
 
 Authors:
     Keegan Skeate <https://github.com/keeganskeate>
 Created: 12/8/2023
-Updated: 12/10/2024
-License: <https://github.com/cannlytics/cannlytics/blob/main/LICENSE>
+Updated: 2/2/2026
+License: CC-BY-4.0 <https://creativecommons.org/licenses/by/4.0/>
 
 Description:
-
     Collect cannabis lab result data published by the Flower Company.
+    
+    This collector scrapes product and COA data from the Flower Company
+    website, downloads COA PDFs, and outputs standardized lab results
+    following the Cannlytics schema.
 
 Data Source:
+    - Flower Company: https://flowercompany.com/
 
-    - [Flower Company](https://flowercompany.com/)
+Output:
+    - Standardized CSV with LabResult schema fields
+    - Downloaded COA PDFs in configured directory
+    - Cached URLs to avoid re-downloading
 
+Usage:
+    ```python
+    from algorithms.get_results_ca_flower_co import FlowerCompanyCollector
+    
+    with FlowerCompanyCollector() as collector:
+        results = collector.get_results(headless=True)
+    ```
+
+Command Line:
+    ```bash
+    python algorithms/get_results_ca_flower_co.py
+    ```
 """
 # Standard imports:
+from datetime import datetime
 import os
 import time
-from typing import List, Dict
+from typing import List, Dict, Optional, Any
 
 # External imports:
 import pandas as pd
 import requests
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select
+from selenium.common.exceptions import NoSuchElementException, TimeoutException
 
 # Internal imports:
-from cannlytics.data.collectors import COACollector
-from cannlytics.data import create_sample_id
+try:
+    from config.results_config import PATHS, SOURCE_CONFIG, PRODUCT_TYPES
+    from config.results_schema import LabResult, normalize_product_type, normalize_status
+    from config.driver_utils import initialize_driver
+    from results_base import COACollector
+except ImportError:
+    # Fallback for standalone execution
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from config.results_config import PATHS, SOURCE_CONFIG, PRODUCT_TYPES
+    from config.results_schema import LabResult, normalize_product_type, normalize_status
+    from config.driver_utils import initialize_driver
+    from results_base import COACollector
 
-# Base URL and categories
+
+# === Constants ===
+
 BASE_URL = 'https://flowercompany.com/'
+
 CATEGORY_PAGES = [
     'category/fire-flower',
     'category/cartridges',
@@ -48,6 +83,7 @@ CATEGORY_PAGES = [
     'category/latest-drops',
 ]
 
+# Classification to indica/sativa percentages
 INDICA_PERCENTAGES = {
     'Indica': 1.0,
     'I-Hybrid': 0.75,
@@ -56,360 +92,918 @@ INDICA_PERCENTAGES = {
     'Sativa': 0.0,
 }
 
+# Category to product type mapping
+CATEGORY_TO_PRODUCT_TYPE = {
+    'fire-flower': 'flower',
+    'top-shelf-nugs': 'flower',
+    'just-weed': 'flower',
+    'cartridges': 'vape',
+    'concentrates': 'concentrate',
+    'edibles': 'edible',
+    'prerolls': 'preroll',
+    'wellness': 'tincture',
+    'the-freshest': None,  # Mixed
+    'staff-picks': None,   # Mixed
+    'latest-drops': None,  # Mixed
+}
+
 
 class FlowerCompanyCollector(COACollector):
-    """Collector for Flower Company cannabis lab results."""
-
-    def _click_yes_button(self):
-        """Click the 'Yes' age gate button if present."""
+    """Collector for Flower Company cannabis lab results.
+    
+    Collects product listings, augments with detailed product data,
+    downloads COA PDFs, and outputs standardized lab results.
+    
+    Attributes:
+        state: Always 'ca' for California.
+        source: Always 'flower_company'.
+        
+    Example:
+        ```python
+        with FlowerCompanyCollector() as collector:
+            df = collector.get_results(headless=True)
+            print(f"Collected {len(df)} results")
+        ```
+    """
+    
+    def __init__(
+            self,
+            data_dir: Optional[str] = None,
+            pdf_dir: Optional[str] = None,
+            cache_path: Optional[str] = None,
+            log_dir: Optional[str] = None,
+            log_name: Optional[str] = None,
+            pause_time: Optional[float] = None,
+            verbose: bool = True,
+        ):
+        """Initialize the Flower Company collector.
+        
+        Args:
+            data_dir: Override for data directory.
+            pdf_dir: Override for PDF storage directory.
+            cache_path: Override for cache file path.
+            log_dir: Override for log directory.
+            log_name: Override for log file name.
+            pause_time: Seconds between requests (default: 4.0).
+            verbose: Enable verbose logging.
+        """
+        # Get source-specific pause time from config
+        source_config = SOURCE_CONFIG.get('flower_company', {})
+        default_pause = source_config.get('pause_time', 4.0)
+        
+        super().__init__(
+            state='ca',
+            source='flower_company',
+            data_dir=data_dir,
+            pdf_dir=pdf_dir,
+            cache_path=cache_path,
+            log_dir=log_dir,
+            log_name=log_name or 'get_results_ca_flower_co',
+            pause_time=pause_time or default_pause,
+            verbose=verbose,
+        )
+    
+    # === Selenium Helpers ===
+    
+    def _init_selenium(self, headless: bool = True, **kwargs) -> None:
+        """Initialize Selenium using the driver_utils module.
+        
+        Uses webdriver-manager for automatic ChromeDriver version matching.
+        
+        Args:
+            headless: Run browser in headless mode.
+            **kwargs: Additional options (unused).
+        """
+        self.driver = initialize_driver(headless=headless, verbose=self.verbose)
+        self.logger.info(f'Selenium driver initialized (headless={headless})')
+    
+    def _click_age_gate(self) -> None:
+        """Click the 'Yes' age verification button if present."""
         try:
             yes_button = self.driver.find_element(By.CLASS_NAME, 'age-gate-yes-button')
             yes_button.click()
             time.sleep(2)
-        except Exception:
-            pass
-
-    def _click_show_more_button(self):
-        """Click 'Show More' until no longer found."""
-        while True:
+            self.logger.debug('Age gate clicked')
+        except NoSuchElementException:
+            pass  # No age gate present
+    
+    def _click_show_more(self, max_clicks: int = 50) -> int:
+        """Click 'Show More' button until all products are loaded.
+        
+        Args:
+            max_clicks: Maximum number of clicks to prevent infinite loops.
+            
+        Returns:
+            Number of times the button was clicked.
+        """
+        clicks = 0
+        while clicks < max_clicks:
             try:
                 more_button = self.driver.find_element(By.CLASS_NAME, 'show-more-button')
                 more_button.click()
+                clicks += 1
                 time.sleep(3)
-            except Exception:
+            except NoSuchElementException:
                 break
-
-    def _extract_weight(self, amount_str: str):
-        """Extract the numerical weight in grams from the amount string."""
-        if amount_str:
+        return clicks
+    
+    # === Data Extraction Helpers ===
+    
+    @staticmethod
+    def _extract_weight(amount_str: str) -> Optional[float]:
+        """Extract weight in grams from amount string.
+        
+        Args:
+            amount_str: String like "1/8 (3.5g)" or "7g".
+            
+        Returns:
+            Weight in grams or None if not parsable.
+        """
+        if not amount_str:
+            return None
+        
+        # Try to find pattern like "(3.5g)"
+        if '(' in amount_str:
             parts = amount_str.split('(')
             if len(parts) > 1:
-                weight = parts[1].split('g')[0].strip()
+                weight_part = parts[1].split('g')[0].strip()
                 try:
-                    return float(weight)
+                    return float(weight_part)
                 except ValueError:
                     pass
-        return None
-
-    def _price_to_float(self, price_str: str):
-        """Convert a price string like '$50' to float."""
-        try:
-            return float(price_str.replace('$', ''))
-        except:
-            return None
-
-    def _download_coa_pdfs(
-            self,
-            items: List[Dict],
-            url_key='lab_results_url',
-            id_key='product_id',
-            verbose=True,
-            pause=10.0
-        ):
-        """Download all COA PDFs from the given items."""
-        for obs in items:
-            url = obs.get(url_key)
-            if not url:
-                continue
-            url_hash = self.cache.hash_url(url)
-            if self.cache.get(url_hash):
-                if verbose:
-                    self.logger.info(f'Skipped (cached): {url}')
-                continue
+        
+        # Try to find pattern like "7g"
+        import re
+        match = re.search(r'(\d+\.?\d*)\s*g', amount_str.lower())
+        if match:
             try:
-                response = requests.get(url)
-                if response.status_code == 200:
-                    filename = os.path.join(self.pdf_dir, obs[id_key] + '.pdf')
-                    with open(filename, 'wb') as pdf_file:
-                        pdf_file.write(response.content)
-                    self.cache.set(url_hash, {'type': 'download', 'url': url, 'file': filename})
-                    if verbose:
-                        self.logger.info(f'Downloaded PDF: {filename}')
-                else:
-                    self.logger.warning(f'Failed to download {url}: HTTP {response.status_code}')
-            except Exception as e:
-                self.logger.error(f'Error downloading {url}: {str(e)}')
-            time.sleep(pause)
-
+                return float(match.group(1))
+            except ValueError:
+                pass
+        
+        return None
+    
+    @staticmethod
+    def _price_to_float(price_str: str) -> Optional[float]:
+        """Convert price string to float.
+        
+        Args:
+            price_str: String like "$50.00" or "$50".
+            
+        Returns:
+            Float price or None.
+        """
+        if not price_str:
+            return None
+        try:
+            return float(price_str.replace('$', '').replace(',', '').strip())
+        except (ValueError, AttributeError):
+            return None
+    
+    @staticmethod
+    def _parse_thc_value(thc_str: str) -> tuple:
+        """Parse THC string into value and units.
+        
+        Args:
+            thc_str: String like "28.5% THC" or "100mg THC".
+            
+        Returns:
+            Tuple of (value: float, units: str) or (None, None).
+        """
+        if not thc_str:
+            return None, None
+        
+        thc_lower = thc_str.lower().strip()
+        
+        # Determine units
+        if '%' in thc_lower:
+            units = 'percent'
+        elif 'mg' in thc_lower:
+            units = 'mg'
+        else:
+            units = 'percent'  # Default assumption
+        
+        # Extract numeric value
+        import re
+        match = re.search(r'(\d+\.?\d*)', thc_lower)
+        if match:
+            try:
+                value = float(match.group(1))
+                return value, units
+            except ValueError:
+                pass
+        
+        return None, None
+    
+    @staticmethod
+    def _generate_product_id(product_name: str, producer: str, total_thc: Any) -> str:
+        """Generate a unique product ID.
+        
+        Args:
+            product_name: Name of the product.
+            producer: Producer/brand name.
+            total_thc: THC value for uniqueness.
+            
+        Returns:
+            16-character hex ID.
+        """
+        import hashlib
+        key_data = f"{product_name or ''}{producer or ''}{total_thc or ''}"
+        return hashlib.sha256(key_data.encode()).hexdigest()[:16]
+    
+    # === Data Collection Methods ===
+    
     def _get_product_pages(self) -> List[str]:
-        """Get a list of brand and category pages."""
+        """Get list of category and brand pages to scrape.
+        
+        Returns:
+            List of page paths (without base URL).
+        """
         self.driver.get(BASE_URL + 'menu')
-        self._click_yes_button()
-        time.sleep(self.pause_time)
+        self._click_age_gate()
+        self.rate_limit()
+        
+        # Get brand pages from menu
+        brand_pages = []
         try:
             div = self.driver.find_element(By.CLASS_NAME, 'special-content-brand-row')
             links = div.find_elements(By.TAG_NAME, 'a')
-            brand_pages = [link.get_attribute('href').replace(BASE_URL, '') for link in links]
-        except Exception:
-            brand_pages = []
-        return CATEGORY_PAGES + brand_pages
-
+            brand_pages = [
+                link.get_attribute('href').replace(BASE_URL, '')
+                for link in links
+                if link.get_attribute('href')
+            ]
+        except NoSuchElementException:
+            self.logger.warning('Brand row not found, using categories only')
+        
+        all_pages = CATEGORY_PAGES + brand_pages
+        self.logger.info(f'Found {len(all_pages)} pages to scrape')
+        return all_pages
+    
     def _collect_products(self, pages: List[str]) -> List[Dict]:
-        """Collect product listings from each page."""
+        """Collect product listings from category/brand pages.
+        
+        Args:
+            pages: List of page paths to scrape.
+            
+        Returns:
+            List of product dictionaries with basic info.
+        """
         products = []
-        recorded = set(self.cache.get('product_urls') or [])
+        recorded_urls = set(self.cache.get('product_urls') or [])
+        
         for page in pages:
             self.driver.get(BASE_URL + page)
-            self._click_yes_button()
-            self._click_show_more_button()
-            time.sleep(self.pause_time)
+            self._click_age_gate()
+            self._click_show_more()
+            self.rate_limit()
+            
             cards = self.driver.find_elements(By.CLASS_NAME, 'product-card-wrapper')
             self.logger.info(f'Found {len(cards)} products for page: {page}')
+            
             for card in cards:
-                # Extract product details.
-                try:
-                    producer = card.find_element(By.CSS_SELECTOR, '.favorite-company a').text.strip()
-                except:
-                    producer = None
-                try:
-                    product_name = card.find_element(By.CSS_SELECTOR, '.favorite-product-name a').text.strip()
-                except:
-                    product_name = None
-                try:
-                    product_url = card.find_element(By.CSS_SELECTOR, '.favorite-product-name a').get_attribute('href')
-                except:
-                    product_url = None
-
-                if not product_url or product_url in recorded:
-                    continue
-                recorded.add(product_url)
-                try:
-                    total_thc_txt = card.find_element(By.CSS_SELECTOR, '.product-card-thc').text.strip()
-                except:
-                    total_thc_txt = ''
-                try:
-                    discount_price_str = card.find_element(By.CSS_SELECTOR, '.price.product-card-price-actual').text.strip()
-                except:
-                    discount_price_str = '$0'
-                try:
-                    price_str = card.find_element(By.CSS_SELECTOR, '.price.retail.product-card-price-retail').text.strip()
-                except:
-                    price_str = discount_price_str
-
-                # Get the amount (weight).
-                try:
-                    amount_txt = card.find_element(By.CSS_SELECTOR, '.solo-variant-toggle').text.strip()
-                except:
-                    # If solo variant not found, try select element.
-                    try:
-                        select_element = card.find_element(By.CSS_SELECTOR, 'select.new-product-card-variant-select')
-                        select_object = Select(select_element)
-                        amount_options = [option.text.strip() for option in select_object.options]
-                        amount_txt = amount_options[0] if amount_options else None
-                    except:
-                        amount_txt = None
-
-                # Classification (assuming first line = classification).
-                classification = card.text.split('\n')[0] if card.text else 'Hybrid'
-                indica_perc = INDICA_PERCENTAGES.get(classification, 0.5)
-                sativa_perc = 1 - indica_perc
-
-                # Clean total THC.
-                total_thc_units = 'percent' if '%' in total_thc_txt.lower() else 'mg'
-                try:
-                    total_thc = float(total_thc_txt.lower().replace('% thc', '').replace('mg thc', '').strip())
-                except:
-                    total_thc = None
-
-                # Clean the price.
-                price = self._price_to_float(price_str)
-                discount_price = self._price_to_float(discount_price_str)
-                discount = (price - discount_price) if price and discount_price else 0
-                amount = self._extract_weight(amount_txt)
-
-                # Add the product to the list.
-                products.append({
-                    'product_name': product_name,
-                    'category': page.split('/')[-1],
-                    'producer': producer,
-                    'total_thc': total_thc,
-                    'total_thc_units': total_thc_units,
-                    'price': price,
-                    'discount_price': discount_price,
-                    'discount': discount,
-                    'amount': amount,
-                    'classification': classification,
-                    'indica_percentage': indica_perc,
-                    'sativa_percentage': sativa_perc,
-                    'product_url': product_url,
-                })
-
-        # Save the product URLs.
-        self.cache.set('product_urls', list(recorded))
+                product = self._extract_product_card(card, page)
+                if product and product['product_url'] not in recorded_urls:
+                    recorded_urls.add(product['product_url'])
+                    products.append(product)
+        
+        # Cache recorded URLs
+        self.cache.set('product_urls', list(recorded_urls))
+        self.logger.info(f'Collected {len(products)} unique products')
         return products
-
-    def _augment_product_data(self, products: pd.DataFrame) -> List[Dict]:
-        """For each product, visit the product page to collect additional data."""
-        data = []
-        for _, product in products.iterrows():
+    
+    def _extract_product_card(self, card, page: str) -> Optional[Dict]:
+        """Extract product data from a product card element.
+        
+        Args:
+            card: Selenium WebElement for the product card.
+            page: Current page path (for category).
+            
+        Returns:
+            Product dictionary or None if extraction fails.
+        """
+        try:
+            # Producer/brand
+            try:
+                producer = card.find_element(By.CSS_SELECTOR, '.favorite-company a').text.strip()
+            except NoSuchElementException:
+                producer = None
+            
+            # Product name and URL
+            try:
+                name_element = card.find_element(By.CSS_SELECTOR, '.favorite-product-name a')
+                product_name = name_element.text.strip()
+                product_url = name_element.get_attribute('href')
+            except NoSuchElementException:
+                return None  # Skip products without name/URL
+            
+            if not product_url:
+                return None
+            
+            # THC content
+            try:
+                thc_text = card.find_element(By.CSS_SELECTOR, '.product-card-thc').text.strip()
+                total_thc, thc_units = self._parse_thc_value(thc_text)
+            except NoSuchElementException:
+                total_thc, thc_units = None, None
+            
+            # Prices
+            try:
+                discount_price_str = card.find_element(
+                    By.CSS_SELECTOR, '.price.product-card-price-actual'
+                ).text.strip()
+                discount_price = self._price_to_float(discount_price_str)
+            except NoSuchElementException:
+                discount_price = None
+            
+            try:
+                price_str = card.find_element(
+                    By.CSS_SELECTOR, '.price.retail.product-card-price-retail'
+                ).text.strip()
+                price = self._price_to_float(price_str)
+            except NoSuchElementException:
+                price = discount_price
+            
+            # Amount/weight
+            amount_txt = None
+            try:
+                amount_txt = card.find_element(By.CSS_SELECTOR, '.solo-variant-toggle').text.strip()
+            except NoSuchElementException:
+                try:
+                    select_element = card.find_element(
+                        By.CSS_SELECTOR, 'select.new-product-card-variant-select'
+                    )
+                    select_obj = Select(select_element)
+                    if select_obj.options:
+                        amount_txt = select_obj.options[0].text.strip()
+                except NoSuchElementException:
+                    pass
+            
+            amount = self._extract_weight(amount_txt)
+            
+            # Classification (Indica/Sativa/Hybrid)
+            classification = None
+            try:
+                class_element = card.find_element(By.CSS_SELECTOR, '.product-card-type-icon')
+                classification = class_element.text.strip()
+            except NoSuchElementException:
+                pass
+            
+            indica_pct = INDICA_PERCENTAGES.get(classification, 0.5) if classification else None
+            sativa_pct = (1 - indica_pct) if indica_pct is not None else None
+            
+            # Determine category from page
+            category = page.split('/')[-1]
+            
+            return {
+                'product_name': product_name,
+                'producer': producer,
+                'category': category,
+                'product_url': product_url,
+                'total_thc': total_thc,
+                'total_thc_units': thc_units,
+                'price': price,
+                'discount_price': discount_price,
+                'discount': (price - discount_price) if price and discount_price else None,
+                'amount': amount,
+                'classification': classification,
+                'indica_percentage': indica_pct,
+                'sativa_percentage': sativa_pct,
+            }
+            
+        except Exception as e:
+            self.logger.warning(f'Error extracting product card: {e}')
+            return None
+    
+    def _augment_products(self, products: pd.DataFrame) -> List[Dict]:
+        """Visit each product page to collect detailed data.
+        
+        Args:
+            products: DataFrame of basic product info.
+            
+        Returns:
+            List of augmented product dictionaries.
+        """
+        augmented = []
+        total = len(products)
+        
+        for idx, (_, product) in enumerate(products.iterrows(), 1):
             product_url = product['product_url']
-            self.logger.info(f'Collecting details for: {product_url}')
-            self.driver.get(product_url)
-            time.sleep(self.pause_time)
-            self._click_yes_button()
-
-            # Extract additional details.
+            self.logger.info(f'[{idx}/{total}] Collecting details: {product_url}')
+            
             try:
-                types = self.driver.find_elements(By.CSS_SELECTOR, '.detail-product-type')
-                product_type = types[0].text.strip() if types else 'Unknown'
-                product_subtype = types[1].text.strip() if len(types) >= 2 else None
-            except:
-                product_type = 'Unknown'
-                product_subtype = None
-
-            try:
-                product_description = self.driver.find_element(By.CSS_SELECTOR, '.product-view-description').text.strip()
-            except:
-                product_description = None
-            info_rows = self.driver.find_elements(By.CSS_SELECTOR, '.row.product-view-row')
-            contents, effects, aromas, lineage, lab_results_url = '', '', '', '', ''
-            for row in info_rows:
-                parts = row.text.split('\n')
-                field = parts[0].lower() if parts else ''
-                if 'contents' in field:
-                    contents = parts[-1]
-                elif 'effects' in field:
-                    effects = parts[-1]
-                elif 'aromas' in field:
-                    aromas = parts[-1]
-                elif 'lineage' in field:
-                    lineage = parts[-1]
-                elif 'tested' in field:
-                    try:
-                        el = row.find_element(By.TAG_NAME, 'a')
-                        lab_results_url = el.get_attribute('href')
-                    except:
-                        pass
-
-            # Distributor info.
+                details = self._collect_product_details(product.to_dict())
+                augmented.append(details)
+            except Exception as e:
+                self.logger.error(f'Error collecting details for {product_url}: {e}')
+                augmented.append(product.to_dict())
+            
+            self.rate_limit()
+        
+        return augmented
+    
+    def _collect_product_details(self, product: Dict) -> Dict:
+        """Collect detailed data from a single product page.
+        
+        Args:
+            product: Basic product dictionary.
+            
+        Returns:
+            Augmented product dictionary with all details.
+        """
+        self.driver.get(product['product_url'])
+        time.sleep(2)
+        self._click_age_gate()
+        
+        # Product type and subtype
+        try:
+            types = self.driver.find_elements(By.CSS_SELECTOR, '.detail-product-type')
+            product_type = types[0].text.strip() if types else None
+            product_subtype = types[1].text.strip() if len(types) >= 2 else None
+        except (NoSuchElementException, IndexError):
+            product_type = None
+            product_subtype = None
+        
+        # Description
+        try:
+            product_description = self.driver.find_element(
+                By.CSS_SELECTOR, '.product-view-description'
+            ).text.strip()
+        except NoSuchElementException:
+            product_description = None
+        
+        # Info rows (contents, effects, aromas, lineage, lab results)
+        contents, effects, aromas, lineage, lab_results_url = '', '', '', '', ''
+        info_rows = self.driver.find_elements(By.CSS_SELECTOR, '.row.product-view-row')
+        for row in info_rows:
+            parts = row.text.split('\n')
+            field = parts[0].lower() if parts else ''
+            
+            if 'contents' in field:
+                contents = parts[-1] if len(parts) > 1 else ''
+            elif 'effects' in field:
+                effects = parts[-1] if len(parts) > 1 else ''
+            elif 'aromas' in field:
+                aromas = parts[-1] if len(parts) > 1 else ''
+            elif 'lineage' in field:
+                lineage = parts[-1] if len(parts) > 1 else ''
+            elif 'tested' in field:
+                try:
+                    link = row.find_element(By.TAG_NAME, 'a')
+                    lab_results_url = link.get_attribute('href')
+                except NoSuchElementException:
+                    pass
+        
+        # Distributor info
+        distributor = None
+        distributor_license = None
+        try:
             els = self.driver.find_elements(By.CSS_SELECTOR, '.row.d-block .detail-sub-text')
-            distributor = els[-2].text.strip() if len(els) > 1 else None
-            distributor_license_number = els[-1].text.strip() if len(els) > 1 else None
-
-            # Image URL.
+            if len(els) >= 2:
+                distributor = els[-2].text.strip()
+                distributor_license = els[-1].text.strip()
+        except (NoSuchElementException, IndexError):
+            pass
+        
+        # Image URL
+        try:
+            image_url = self.driver.find_element(
+                By.CSS_SELECTOR, '.product-image-lg'
+            ).get_attribute('src')
+        except NoSuchElementException:
+            image_url = None
+        
+        # Re-extract THC/CBD if missing
+        if not product.get('total_thc'):
             try:
-                image_url = self.driver.find_element(By.CSS_SELECTOR, '.product-image-lg').get_attribute('src')
-            except:
-                image_url = None
-
-            # Ensure price / amount updated if missing.
-            if pd.isnull(product['price']):
-                # Try to re-extract price and amount from product page.
-                try:
-                    price_element = self.driver.find_element(By.ID, 'variant-price-retail')
-                    self.driver.execute_script("arguments[0].scrollIntoView(true);", price_element)
-                    time.sleep(0.33)
-                    price_str = price_element.text
-                    discount_price_str = self.driver.find_element(By.ID, 'variant-price').text
-                    amount_txt = self.driver.find_element(By.CSS_SELECTOR, '.variant-toggle').text
-                    product['amount'] = self._extract_weight(amount_txt)
-                    product['price'] = self._price_to_float(price_str)
-                    product['discount_price'] = self._price_to_float(discount_price_str)
-                    product['discount'] = (product['price'] - product['discount_price']
-                                           if product['price'] and product['discount_price'] else 0)
-                except:
-                    pass
-
-            # Ensure THC/CBD updated if missing.
-            if pd.isnull(product['total_thc']):
-                try:
-                    total_thc_txt = self.driver.find_element(By.CSS_SELECTOR, '.product-card-thc').text
-                    product['total_thc'] = float(total_thc_txt.lower().replace('% thc', '').replace('mg thc', '').strip())
-                    product['total_thc_units'] = 'percent' if '%' in total_thc_txt.lower() else 'mg'
-                except:
-                    pass
-
-            if 'total_cbd' not in product or pd.isnull(product['total_cbd']):
-                try:
-                    total_cbd_txt = self.driver.find_element(By.CSS_SELECTOR, '.product-card-cbd').text
-                    product['total_cbd'] = float(total_cbd_txt.lower().replace('% cbd', '').replace('mg cbd', '').strip())
-                    product['total_cbd_units'] = 'percent' if '%' in total_cbd_txt.lower() else 'mg'
-                except:
-                    product['total_cbd'] = None
-                    product['total_cbd_units'] = None
-
-            # Classification check.
-            if not product['classification']:
-                try:
-                    el = self.driver.find_element(By.CSS_SELECTOR, '.product-detail-type-container')
-                    classification = el.text.split('\n')[0]
-                    product['classification'] = classification
-                    product['indica_percentage'] = INDICA_PERCENTAGES.get(classification, 0.5)
-                    product['sativa_percentage'] = 1 - product['indica_percentage']
-                except:
-                    pass
-
-            # Create unique product ID.
-            product_id = create_sample_id(
-                private_key=str(product.get('total_thc', '')),
-                public_key=product['product_name'] or '',
-                salt=product['producer'] or '',
+                thc_text = self.driver.find_element(By.CSS_SELECTOR, '.product-card-thc').text
+                product['total_thc'], product['total_thc_units'] = self._parse_thc_value(thc_text)
+            except NoSuchElementException:
+                pass
+        
+        # CBD
+        total_cbd = None
+        try:
+            cbd_text = self.driver.find_element(By.CSS_SELECTOR, '.product-card-cbd').text
+            total_cbd, _ = self._parse_thc_value(cbd_text)
+        except NoSuchElementException:
+            pass
+        
+        # Re-extract classification if missing
+        if not product.get('classification'):
+            try:
+                class_el = self.driver.find_element(By.CSS_SELECTOR, '.product-detail-type-container')
+                classification = class_el.text.split('\n')[0]
+                product['classification'] = classification
+                product['indica_percentage'] = INDICA_PERCENTAGES.get(classification, 0.5)
+                product['sativa_percentage'] = 1 - product['indica_percentage']
+            except NoSuchElementException:
+                pass
+        
+        # Generate product ID
+        product_id = self._generate_product_id(
+            product.get('product_name'),
+            product.get('producer'),
+            product.get('total_thc')
+        )
+        
+        # Merge all data
+        product.update({
+            'product_id': product_id,
+            'product_type': product_type,
+            'product_subtype': product_subtype,
+            'product_description': product_description,
+            'product_contents': contents,
+            'predicted_effects': effects,
+            'predicted_aromas': aromas.split(', ') if aromas else [],
+            'lineage': lineage,
+            'lab_results_url': lab_results_url,
+            'image_url': image_url,
+            'distributor': distributor,
+            'distributor_license_number': distributor_license,
+            'total_cbd': total_cbd,
+        })
+        
+        return product
+    
+    def _download_coas(
+            self,
+            items: List[Dict],
+            url_key: str = 'lab_results_url',
+            id_key: str = 'product_id',
+        ) -> int:
+        """Download COA PDFs for all items.
+        
+        Args:
+            items: List of product dictionaries.
+            url_key: Key containing COA URL.
+            id_key: Key for generating filename.
+            
+        Returns:
+            Number of PDFs downloaded.
+        """
+        downloaded = 0
+        
+        for item in items:
+            url = item.get(url_key)
+            if not url:
+                continue
+            
+            # Check cache
+            url_hash = self.cache.hash_url(url)
+            if self.cache.get(url_hash):
+                self.logger.info(f'Skipped (cached): {url}')
+                self._stats['cached'] += 1
+                continue
+            
+            # Download PDF
+            filename = f"{item.get(id_key, url_hash)}.pdf"
+            filepath = self.pdf_dir / filename
+            
+            success = self.download_pdf(url, str(filepath))
+            if success:
+                self.cache.set(url_hash, {
+                    'type': 'download',
+                    'url': url,
+                    'file': str(filepath),
+                    'downloaded_at': datetime.now().isoformat(),
+                })
+                downloaded += 1
+            
+            self.rate_limit(multiplier=2.5)  # Extra delay for downloads
+        
+        self.logger.info(f'Downloaded {downloaded} COA PDFs')
+        return downloaded
+    
+    def _convert_to_lab_results(self, items: List[Dict]) -> List[Dict]:
+        """Convert raw product data to standardized LabResult schema.
+        
+        Args:
+            items: List of augmented product dictionaries.
+            
+        Returns:
+            List of dictionaries matching LabResult schema.
+        """
+        results = []
+        
+        for item in items:
+            # Normalize product type
+            raw_type = item.get('product_type') or item.get('category')
+            normalized_type = normalize_product_type(raw_type)
+            if not normalized_type:
+                # Try mapping from category
+                category = item.get('category', '')
+                normalized_type = CATEGORY_TO_PRODUCT_TYPE.get(category)
+            
+            # Build standardized result
+            result = LabResult(
+                # Identifiers
+                id=item.get('product_id'),
+                sample_id=item.get('product_id'),
+                
+                # Product info
+                product_name=item.get('product_name'),
+                product_type=normalized_type,
+                product_subtype=item.get('product_subtype'),
+                strain_name=item.get('lineage'),
+                batch_size=item.get('amount'),
+                
+                # Producer info
+                producer=item.get('producer'),
+                
+                # Distributor info
+                distributor=item.get('distributor'),
+                distributor_license_number=item.get('distributor_license_number'),
+                
+                # Cannabinoids
+                total_thc=item.get('total_thc'),
+                total_cbd=item.get('total_cbd'),
+                
+                # Classification
+                classification=item.get('classification'),
+                indica_percentage=item.get('indica_percentage'),
+                sativa_percentage=item.get('sativa_percentage'),
+                
+                # COA info
+                lab_results_url=item.get('lab_results_url'),
+                coa_url=item.get('lab_results_url'),
+                
+                # Images
+                images=[{'url': item.get('image_url')}] if item.get('image_url') else [],
+                
+                # Metadata
+                state='ca',
+                source='flower_company',
+                created_at=datetime.now(),
+                updated_at=datetime.now(),
             )
-
-            # Record the product item details.
-            record = product.to_dict()
-            record.update({
-                'product_id': product_id,
-                'lab_results_url': lab_results_url,
-                'image_url': image_url,
-                'product_type': product_type,
-                'product_subtype': product_subtype,
-                'product_description': product_description,
-                'product_contents': contents,
-                'predicted_effects': effects,
-                'predicted_aromas': aromas.split(', ') if aromas else [],
-                'lineage': lineage,
-                'distributor': distributor,
-                'distributor_license_number': distributor_license_number,
-            })
-            data.append(record)
-
-        return data
-
+            
+            results.append(result.to_dict())
+        
+        return results
+    
+    # === Main Collection Method ===
+    
     def get_results(
             self,
             headless: bool = True,
+            download_pdfs: bool = True,
+            save_intermediate: bool = True,
         ) -> pd.DataFrame:
-        """Get Flower Company results."""
-
-        # Initialize.
-        self._init_selenium(
-            headless=headless,
-            download_dir=self.pdf_dir,
-        )
-        pages = self._get_product_pages()
-        products = self._collect_products(pages)
-        product_df = pd.DataFrame(products)
-
-        # Save intermediate product data.
-        self._save_results(product_df, prefix='ca-flower-company-products-initial')
-
-        # Augment products with details.
-        augmented_data = self._augment_product_data(product_df)
-        augmented_df = pd.DataFrame(augmented_data)
-        self._save_results(augmented_df, prefix='ca-flower-company-products-augmented')
-
-        # Download COAs.
-        self._download_coa_pdfs(augmented_data, verbose=True)
-
-        # Clean up Selenium.
-        if self.driver:
+        """Collect Flower Company lab results.
+        
+        Args:
+            headless: Run browser in headless mode.
+            download_pdfs: Whether to download COA PDFs.
+            save_intermediate: Save intermediate data files.
+            
+        Returns:
+            DataFrame with standardized lab results.
+        """
+        self.logger.info('Starting Flower Company collection...')
+        
+        # Initialize Selenium
+        self._init_selenium(headless=headless)
+        
+        try:
+            # Phase 1: Get pages to scrape
+            pages = self._get_product_pages()
+            
+            # Phase 2: Collect basic product listings
+            products = self._collect_products(pages)
+            products_df = pd.DataFrame(products)
+            
+            if save_intermediate:
+                self.save_results(
+                    products_df,
+                    prefix='ca-flower-company-products-initial',
+                    save_latest=False,
+                )
+            
+            if products_df.empty:
+                self.logger.warning('No products found')
+                return pd.DataFrame()
+            
+            # Phase 3: Augment with detailed data
+            augmented = self._augment_products(products_df)
+            augmented_df = pd.DataFrame(augmented)
+            
+            if save_intermediate:
+                self.save_results(
+                    augmented_df,
+                    prefix='ca-flower-company-products-augmented',
+                    save_latest=False,
+                )
+            
+            # Phase 4: Download COA PDFs
+            if download_pdfs:
+                self._download_coas(augmented)
+            
+            # Phase 5: Convert to standardized schema
+            standardized = self._convert_to_lab_results(augmented)
+            results_df = pd.DataFrame(standardized)
+            
+            # Save final results
+            self.save_results(
+                results_df,
+                prefix='ca-flower-company-results',
+                save_latest=True,
+            )
+            
+            self.logger.info(f'✓ Collected {len(results_df)} results from Flower Company (CA)')
+            return results_df
+            
+        finally:
             self._quit_driver()
-
-        # Return the results.
-        self.logger.info('✓ Collected results for Flower Company (CA).')
-        return augmented_df
+            self.log_stats()
 
 
-# === Test ===
-# [✓] Tested: 2024-12-10 by Keegan Skeate <keegan@cannlytics>
+# =============================================================================
+# Testing
+# =============================================================================
+
+def run_unit_tests():
+    """Run unit tests for helper methods.
+    
+    These tests can run without Selenium or network access.
+    """
+    print('\n' + '='*60)
+    print('UNIT TESTS: FlowerCompanyCollector')
+    print('='*60)
+    
+    passed = 0
+    failed = 0
+    
+    # Test _extract_weight
+    print('\n--- Test: _extract_weight ---')
+    test_cases = [
+        ('1/8 (3.5g)', 3.5),
+        ('7g', 7.0),
+        ('14g', 14.0),
+        ('1oz (28g)', 28.0),
+        ('', None),
+        (None, None),
+        ('invalid', None),
+    ]
+    for input_val, expected in test_cases:
+        result = FlowerCompanyCollector._extract_weight(input_val)
+        status = '✓' if result == expected else '✗'
+        if result == expected:
+            passed += 1
+        else:
+            failed += 1
+        print(f"  {status} _extract_weight('{input_val}') = {result} (expected {expected})")
+    
+    # Test _price_to_float
+    print('\n--- Test: _price_to_float ---')
+    test_cases = [
+        ('$50', 50.0),
+        ('$50.00', 50.0),
+        ('$1,250.00', 1250.0),
+        ('', None),
+        (None, None),
+    ]
+    for input_val, expected in test_cases:
+        result = FlowerCompanyCollector._price_to_float(input_val)
+        status = '✓' if result == expected else '✗'
+        if result == expected:
+            passed += 1
+        else:
+            failed += 1
+        print(f"  {status} _price_to_float('{input_val}') = {result} (expected {expected})")
+    
+    # Test _parse_thc_value
+    print('\n--- Test: _parse_thc_value ---')
+    test_cases = [
+        ('28.5% THC', (28.5, 'percent')),
+        ('100mg THC', (100.0, 'mg')),
+        ('24.5%', (24.5, 'percent')),
+        ('', (None, None)),
+        (None, (None, None)),
+    ]
+    for input_val, expected in test_cases:
+        result = FlowerCompanyCollector._parse_thc_value(input_val)
+        status = '✓' if result == expected else '✗'
+        if result == expected:
+            passed += 1
+        else:
+            failed += 1
+        print(f"  {status} _parse_thc_value('{input_val}') = {result} (expected {expected})")
+    
+    # Test _generate_product_id
+    print('\n--- Test: _generate_product_id ---')
+    id1 = FlowerCompanyCollector._generate_product_id('Blue Dream', 'Test Farm', 24.5)
+    id2 = FlowerCompanyCollector._generate_product_id('Blue Dream', 'Test Farm', 24.5)
+    id3 = FlowerCompanyCollector._generate_product_id('OG Kush', 'Test Farm', 24.5)
+    
+    status1 = '✓' if len(id1) == 16 else '✗'
+    status2 = '✓' if id1 == id2 else '✗'
+    status3 = '✓' if id1 != id3 else '✗'
+    
+    print(f"  {status1} ID length is 16: {len(id1)}")
+    print(f"  {status2} Same inputs produce same ID: {id1 == id2}")
+    print(f"  {status3} Different inputs produce different IDs: {id1 != id3}")
+    
+    passed += 3 if status1 == '✓' else 0
+    passed += 1 if status2 == '✓' else 0
+    passed += 1 if status3 == '✓' else 0
+    failed += 0 if status1 == '✓' else 1
+    failed += 0 if status2 == '✓' else 1
+    failed += 0 if status3 == '✓' else 1
+    
+    # Summary
+    print('\n' + '-'*60)
+    print(f'Results: {passed} passed, {failed} failed')
+    print('='*60)
+    
+    return failed == 0
+
+
+def run_integration_test(headless: bool = True):
+    """Run integration test with actual collection.
+    
+    Requires network access and Selenium.
+    
+    Args:
+        headless: Run in headless mode.
+    """
+    print('\n' + '='*60)
+    print('INTEGRATION TEST: FlowerCompanyCollector')
+    print('='*60)
+    
+    try:
+        with FlowerCompanyCollector(verbose=True) as collector:
+            # Test with limited scope
+            collector.logger.info('Running integration test...')
+            
+            # Initialize driver
+            collector._init_selenium(headless=headless)
+            
+            # Test page navigation
+            collector.driver.get(BASE_URL)
+            collector._click_age_gate()
+            
+            # Get just one page
+            collector.driver.get(BASE_URL + 'category/fire-flower')
+            collector._click_age_gate()
+            time.sleep(2)
+            
+            cards = collector.driver.find_elements(By.CLASS_NAME, 'product-card-wrapper')
+            print(f'✓ Found {len(cards)} products on test page')
+            
+            # Test product extraction
+            if cards:
+                product = collector._extract_product_card(cards[0], 'category/fire-flower')
+                print(f'✓ Extracted product: {product.get("product_name") if product else "None"}')
+            
+            print('\n✓ Integration test passed')
+            return True
+            
+    except Exception as e:
+        print(f'\n✗ Integration test failed: {e}')
+        return False
+
+
+# =============================================================================
+# Main Entry Point
+# =============================================================================
+
 if __name__ == '__main__':
-
-    # Get Flower Company results.
-    collector = FlowerCompanyCollector(
-        data_dir='D:/data/california/results',
-        pdf_dir='D:/data/california/results/pdfs/flower-company',
-        cache_path='D://data/.cache/results-ca-flower-company.jsonl',
-        log_name='get_results_ca_flower_co',
-    )
-    results = collector.get_results(headless=True)
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Collect Flower Company lab results')
+    parser.add_argument('--headless', action='store_true', default=True,
+                        help='Run in headless mode (default: True)')
+    parser.add_argument('--no-headless', dest='headless', action='store_false',
+                        help='Run with visible browser')
+    parser.add_argument('--test', action='store_true',
+                        help='Run unit tests only')
+    parser.add_argument('--integration-test', action='store_true',
+                        help='Run integration test')
+    parser.add_argument('--data-dir', type=str, default=None,
+                        help='Override data directory')
+    parser.add_argument('--pdf-dir', type=str, default=None,
+                        help='Override PDF directory')
+    
+    args = parser.parse_args()
+    
+    if args.test:
+        # Run unit tests
+        success = run_unit_tests()
+        exit(0 if success else 1)
+    
+    elif args.integration_test:
+        # Run integration test
+        success = run_integration_test(headless=args.headless)
+        exit(0 if success else 1)
+    
+    else:
+        # Run full collection
+        collector = FlowerCompanyCollector(
+            data_dir=args.data_dir,
+            pdf_dir=args.pdf_dir,
+        )
+        
+        with collector:
+            results = collector.get_results(headless=args.headless)
+            print(f'\nCollected {len(results)} results')

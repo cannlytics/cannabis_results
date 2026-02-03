@@ -1,0 +1,1 @@
+# Contributing to the Cannabis Results Data Repository
