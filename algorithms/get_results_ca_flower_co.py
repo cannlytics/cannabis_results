@@ -46,8 +46,15 @@ from typing import List, Dict, Optional, Any
 import pandas as pd
 import requests
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import Select
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import Select, WebDriverWait
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    ElementClickInterceptedException,
+    StaleElementReferenceException,
+    ElementNotInteractableException,
+    TimeoutException,
+)
 
 # Internal imports:
 try:
@@ -178,33 +185,118 @@ class FlowerCompanyCollector(COACollector):
         self.logger.info(f'Selenium driver initialized (headless={headless})')
     
     def _click_age_gate(self) -> None:
-        """Click the 'Yes' age verification button if present."""
+        """Click the 'Yes' age verification button if present.
+        
+        Handles common Selenium interactability issues by:
+        1. Waiting for the element to be present
+        2. Scrolling it into view
+        3. Waiting for it to be clickable
+        4. Using JavaScript click as a fallback
+        """
         try:
-            yes_button = self.driver.find_element(By.CLASS_NAME, 'age-gate-yes-button')
-            yes_button.click()
-            time.sleep(2)
+            # Wait for age gate button to be present
+            try:
+                yes_button = WebDriverWait(self.driver, 5).until(
+                    EC.presence_of_element_located((By.CLASS_NAME, 'age-gate-yes-button'))
+                )
+            except TimeoutException:
+                # No age gate present
+                return
+            
+            # Scroll the button into view
+            self.driver.execute_script(
+                "arguments[0].scrollIntoView({behavior: 'instant', block: 'center'});",
+                yes_button
+            )
+            time.sleep(0.5)  # Allow scroll to complete
+            
+            # Try regular click first
+            try:
+                yes_button = WebDriverWait(self.driver, 3).until(
+                    EC.element_to_be_clickable((By.CLASS_NAME, 'age-gate-yes-button'))
+                )
+                yes_button.click()
+            except (ElementClickInterceptedException, ElementNotInteractableException, TimeoutException):
+                # Fallback: Use JavaScript click (bypasses interactability checks)
+                self.driver.execute_script("arguments[0].click();", yes_button)
+            
+            time.sleep(2)  # Wait for page to respond
             self.logger.debug('Age gate clicked')
+            
         except NoSuchElementException:
             pass  # No age gate present
+        except StaleElementReferenceException:
+            # Page changed, try once more
+            time.sleep(1)
+            self._click_age_gate()
     
     def _click_show_more(self, max_clicks: int = 50) -> int:
         """Click 'Show More' button until all products are loaded.
+        
+        This method handles common Selenium interactability issues by:
+        1. Scrolling the button into view
+        2. Waiting for it to be clickable
+        3. Using JavaScript click as a fallback
         
         Args:
             max_clicks: Maximum number of clicks to prevent infinite loops.
             
         Returns:
             Number of times the button was clicked.
-        """
+        """        
         clicks = 0
-        while clicks < max_clicks:
+        consecutive_failures = 0
+        max_consecutive_failures = 3
+        
+        while clicks < max_clicks and consecutive_failures < max_consecutive_failures:
             try:
-                more_button = self.driver.find_element(By.CLASS_NAME, 'show-more-button')
-                more_button.click()
+                # Wait for button to be present (with timeout)
+                try:
+                    more_button = WebDriverWait(self.driver, 5).until(
+                        EC.presence_of_element_located((By.CLASS_NAME, 'show-more-button'))
+                    )
+                except TimeoutException:
+                    # No button found - we've loaded all products
+                    break
+                
+                # Scroll the button into view (center of viewport)
+                self.driver.execute_script(
+                    "arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});",
+                    more_button
+                )
+                time.sleep(0.5)  # Allow scroll animation to complete
+                
+                # Try regular click first
+                try:
+                    # Wait for element to be clickable
+                    more_button = WebDriverWait(self.driver, 3).until(
+                        EC.element_to_be_clickable((By.CLASS_NAME, 'show-more-button'))
+                    )
+                    more_button.click()
+                except (ElementClickInterceptedException, ElementNotInteractableException, TimeoutException):
+                    # Fallback: Use JavaScript click (bypasses interactability checks)
+                    self.driver.execute_script("arguments[0].click();", more_button)
+                
                 clicks += 1
-                time.sleep(3)
+                consecutive_failures = 0  # Reset on success
+                self.logger.debug(f'Show More clicked ({clicks} times)')
+                time.sleep(3)  # Wait for new products to load
+                
             except NoSuchElementException:
+                # No more "Show More" button - we've loaded all products
                 break
+            except StaleElementReferenceException:
+                # Page changed while we were working, retry
+                consecutive_failures += 1
+                time.sleep(1)
+            except Exception as e:
+                self.logger.debug(f'Show More click attempt failed: {e}')
+                consecutive_failures += 1
+                time.sleep(1)
+        
+        if clicks > 0:
+            self.logger.info(f'Clicked Show More {clicks} times')
+        
         return clicks
     
     # === Data Extraction Helpers ===
@@ -814,8 +906,9 @@ class FlowerCompanyCollector(COACollector):
             return results_df
             
         finally:
+            # Note: log_stats() is called by __exit__ when using context manager
+            # Only quit driver here - it's idempotent (checks self.driver is not None)
             self._quit_driver()
-            self.log_stats()
 
 
 # =============================================================================
