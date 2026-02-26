@@ -230,13 +230,19 @@ class FlowerCompanyCollector(COACollector):
             time.sleep(1)
             self._click_age_gate()
     
-    def _click_show_more(self, max_clicks: int = 50) -> int:
+    def _click_show_more(self, max_clicks: int = 200) -> int:
         """Click 'Show More' button until all products are loaded.
         
         This method handles common Selenium interactability issues by:
         1. Scrolling the button into view
         2. Waiting for it to be clickable
         3. Using JavaScript click as a fallback
+        
+        The method detects when all products have been loaded by checking:
+        - Whether the button has been removed from the DOM
+        - Whether the button is disabled (attribute or CSS class)
+        - Whether the button is hidden (display:none, visibility:hidden)
+        - Whether the product count has stopped increasing after clicks
         
         Args:
             max_clicks: Maximum number of clicks to prevent infinite loops.
@@ -247,6 +253,13 @@ class FlowerCompanyCollector(COACollector):
         clicks = 0
         consecutive_failures = 0
         max_consecutive_failures = 3
+        no_new_products_count = 0
+        max_no_new_products = 3  # Stop after 3 clicks yield no new products
+        
+        # Get initial product count
+        previous_product_count = len(
+            self.driver.find_elements(By.CLASS_NAME, 'product-card-wrapper')
+        )
         
         while clicks < max_clicks and consecutive_failures < max_consecutive_failures:
             try:
@@ -257,6 +270,19 @@ class FlowerCompanyCollector(COACollector):
                     )
                 except TimeoutException:
                     # No button found - we've loaded all products
+                    self.logger.debug('Show More button not found in DOM')
+                    break
+                
+                # Check if button is disabled (attribute or class)
+                is_disabled = more_button.get_attribute('disabled')
+                button_classes = more_button.get_attribute('class') or ''
+                if is_disabled or 'disabled' in button_classes:
+                    self.logger.debug('Show More button is disabled — all products loaded')
+                    break
+                
+                # Check if button is hidden
+                if not more_button.is_displayed():
+                    self.logger.debug('Show More button is hidden — all products loaded')
                     break
                 
                 # Scroll the button into view (center of viewport)
@@ -282,6 +308,25 @@ class FlowerCompanyCollector(COACollector):
                 self.logger.debug(f'Show More clicked ({clicks} times)')
                 time.sleep(3)  # Wait for new products to load
                 
+                # Check if new products were actually loaded
+                current_product_count = len(
+                    self.driver.find_elements(By.CLASS_NAME, 'product-card-wrapper')
+                )
+                if current_product_count > previous_product_count:
+                    previous_product_count = current_product_count
+                    no_new_products_count = 0  # Reset counter
+                else:
+                    no_new_products_count += 1
+                    self.logger.debug(
+                        f'No new products after click {clicks} '
+                        f'({no_new_products_count}/{max_no_new_products})'
+                    )
+                    if no_new_products_count >= max_no_new_products:
+                        self.logger.debug(
+                            'No new products after multiple clicks — all products loaded'
+                        )
+                        break
+                
             except NoSuchElementException:
                 # No more "Show More" button - we've loaded all products
                 break
@@ -295,7 +340,7 @@ class FlowerCompanyCollector(COACollector):
                 time.sleep(1)
         
         if clicks > 0:
-            self.logger.info(f'Clicked Show More {clicks} times')
+            self.logger.info(f'Clicked Show More {clicks} times (loaded {previous_product_count} products)')
         
         return clicks
     
@@ -442,7 +487,7 @@ class FlowerCompanyCollector(COACollector):
             List of product dictionaries with basic info.
         """
         products = []
-        recorded_urls = set(self.cache.get('product_urls') or [])
+        recorded_urls = set()  # Deduplicate within this run only (not across runs)
         
         for page in pages:
             self.driver.get(BASE_URL + page)
@@ -752,7 +797,7 @@ class FlowerCompanyCollector(COACollector):
             filename = f"{item.get(id_key, url_hash)}.pdf"
             filepath = self.pdf_dir / filename
             
-            success = self.download_pdf(url, str(filepath))
+            success = self.download_file(url, str(filepath))
             if success:
                 self.cache.set(url_hash, {
                     'type': 'download',
