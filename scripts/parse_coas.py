@@ -452,6 +452,27 @@ class AIClient:
             mode='analysis',
         )
 
+    def parse_single_page(
+            self,
+            page_images: Optional[List[str]] = None,
+            page_text: Optional[str] = None,
+        ) -> Tuple[Optional[Dict], float, int, int]:
+        """Parse a single-page COA in one shot (metadata + all results).
+
+        Returns: (parsed_data, cost, input_tokens, output_tokens)
+        where parsed_data has 'metadata', 'cannabinoids', 'terpenes', etc.
+        """
+        # No Pydantic schema — the response has variable top-level keys.
+        return self._call_ai(
+            system_prompt=SINGLE_PAGE_SYSTEM_PROMPT,
+            user_prompt=SINGLE_PAGE_USER_PROMPT,
+            pdf_path=None,
+            page_images=page_images,
+            page_text=page_text,
+            response_schema=None,
+            mode='single_page',
+        )
+
     def _call_ai(
             self,
             system_prompt: str,
@@ -510,18 +531,17 @@ class AIClient:
 
         Two API paths:
           - PDF available (OpenAI only): Uses the Responses API
-            (`client.responses.create`) with `input_file`, which
-            natively extracts text + page images from PDFs.
-          - Images/text: Uses the Chat Completions API
+            (`client.responses.create`) with `input_file`.
+            Reserved for rare cases where full PDF is needed.
+          - Images/text (default): Uses the Chat Completions API
             (`client.beta.chat.completions.parse`) with `image_url`.
-
-        The Responses API is preferred for PDFs because it preserves
-        document structure, layout, and visual elements. xAI does
-        not support the Responses API, so it always uses images.
+            This is the standard path since the orchestration layer
+            sends targeted page images to minimize token usage.
         """
 
         # ── Path A: PDF via Responses API (OpenAI only) ─────────
-        if pdf_path and self.provider == 'openai':
+        # Only used when explicitly passed a pdf_path with no images.
+        if pdf_path and not page_images and self.provider == 'openai':
             return self._call_openai_responses_api(
                 system_prompt, user_prompt, pdf_path,
                 response_schema, mode,
@@ -824,45 +844,54 @@ METADATA_SYSTEM_PROMPT = """You are an expert cannabis Certificate of Analysis (
 Fields to extract:
 | Field | Type | Example | Description |
 |-------|------|---------|-------------|
-| product_name | str | "Blue Dream Preroll (1g)" | Product name |
-| strain_name | str | "Blue Dream" | Cannabis strain name |
-| product_type | str | "flower" | Product type (flower, concentrate, edible, preroll, vape, tincture, topical) |
-| date_tested | str | "2024-01-23" | Test date (ISO format YYYY-MM-DD) |
-| date_received | str | "2024-01-22" | Received date (ISO format) |
-| date_collected | str | "" | Collection date (ISO format) |
-| batch_number | str | "BN123" | Batch/lot number |
-| batch_size | float | 1000.0 | Batch size in grams |
-| lab | str | "ABC Labs" | Testing lab name |
-| lab_license_number | str | "LAB001" | Lab license number |
-| lab_address | str | "123 Main St" | Lab address |
-| lab_city | str | "Portland" | Lab city |
-| lab_state | str | "OR" | Lab state (2-letter code) |
-| lab_zipcode | str | "97201" | Lab ZIP code |
-| producer | str | "ABC Farms" | Producer/cultivator name |
-| producer_street | str | "789 Farm Rd" | Producer street |
+| product_name | str | "Blue Dream Preroll (1g)" | Full product name as shown |
+| strain_name | str | "Blue Dream" | Cannabis strain/cultivar name |
+| product_type | str | "flower" | One of: flower, concentrate, edible, preroll, vape, tincture, topical |
+| date_tested | str | "2024-01-23" | Test/analysis completion date (ISO YYYY-MM-DD) |
+| date_received | str | "2024-01-22" | Sample received date (ISO YYYY-MM-DD) |
+| date_collected | str | "" | Sample collection date (ISO YYYY-MM-DD) |
+| batch_number | str | "BN-2024-123" | Batch, lot, or metrc batch number |
+| batch_size | float | 1000.0 | Batch size in grams (convert lbs/oz if needed) |
+| lab | str | "SC Laboratories" | Testing laboratory full name |
+| lab_license_number | str | "C8-0000013-LIC" | Lab license — copy EVERY character carefully |
+| lab_address | str | "123 Main St" | Lab street address |
+| lab_city | str | "Santa Cruz" | Lab city |
+| lab_state | str | "CA" | Lab state (2-letter code) |
+| lab_zipcode | str | "95060" | Lab ZIP code |
+| producer | str | "ABC Farms LLC" | Producer/cultivator/manufacturer name |
+| producer_street | str | "789 Farm Rd" | Producer street address |
 | producer_city | str | "Bend" | Producer city |
-| producer_state | str | "OR" | Producer state |
-| producer_zipcode | str | "97701" | Producer ZIP |
-| producer_license_number | str | "PROD001" | Producer license |
-| distributor | str | "" | Distributor name if listed |
-| distributor_license_number | str | "" | Distributor license |
-| sample_id | str | "ABC123" | Lab sample ID |
+| producer_state | str | "OR" | Producer state (2-letter code) |
+| producer_zipcode | str | "97701" | Producer ZIP code |
+| producer_license_number | str | "C11-0005002-LIC" | Producer license — copy carefully |
+| distributor | str | "" | Distributor name (if listed) |
+| distributor_license_number | str | "" | Distributor license (if listed) |
+| sample_id | str | "2RLS-240530-018" | Lab sample ID — copy carefully |
 | sample_weight | float | 1.0 | Sample weight in grams |
-| total_cannabinoids | float | 20.0 | Total cannabinoids % |
-| total_cbd | float | 0.5 | Total CBD % |
-| total_thc | float | 18.0 | Total THC % |
-| total_terpenes | float | 2.0 | Total terpenes % |
+| total_cannabinoids | float | 54.79 | Total cannabinoids — ALWAYS in percent (%) |
+| total_cbd | float | 0.5 | Total CBD — ALWAYS in percent (%) |
+| total_thc | float | 18.0 | Total THC — ALWAYS in percent (%) |
+| total_terpenes | float | 2.0 | Total terpenes — ALWAYS in percent (%) |
 | status | str | "pass" | Overall pass/fail status |
-| analyses | list | ["cannabinoids", "terpenes"] | List of analyses performed |
+| analyses | list | ["cannabinoids", "terpenes"] | List of all analysis types on the COA |
 
-Rules:
-- Return 0.0 for numeric fields not found, "" for string fields not found.
-- Dates must be ISO format (YYYY-MM-DD). Convert any date format found.
-- For product_type, use lowercase standardized names.
-- For analyses, list all analysis types mentioned on the COA."""
+CRITICAL RULES:
+
+1. TOTALS ARE ALWAYS IN PERCENT: total_thc, total_cbd, total_cannabinoids, and total_terpenes must ALWAYS be reported in percent (%). If the COA shows these as mg/g, divide by 10 to convert to percent. A total_thc of 737.71 mg/g = 73.771%. If total_thc appears as a large number (>100), it is likely mg/g and must be converted.
+
+2. LICENSE NUMBERS AND SAMPLE IDS: These are alphanumeric codes where every character matters. Read them very carefully — distinguish between similar characters: 0 vs O, 1 vs I vs l, 8 vs B, 5 vs S. Copy exactly as printed.
+
+3. DATES: Convert any date format to ISO (YYYY-MM-DD). "03/11/2024" → "2024-03-11". "March 11, 2024" → "2024-03-11". Use the test completion date for date_tested, not the report date.
+
+4. DEFAULT VALUES: Return 0.0 for numeric fields not found, "" for string fields not found.
+
+5. PRODUCT TYPE: Use lowercase. "Pre-Roll" → "preroll". "Vape Cartridge" → "vape". "Live Resin" → "concentrate". "Gummies" → "edible"."""
 
 METADATA_USER_PROMPT = (
     'Extract the metadata from this Certificate of Analysis (COA). '
+    'Remember: total_thc, total_cbd, total_cannabinoids, and total_terpenes '
+    'must be in PERCENT (%). If shown as mg/g, divide by 10. '
+    'Copy license numbers and sample IDs character-by-character. '
     'Return valid JSON matching the LabTestMetadata schema.'
 )
 
@@ -870,28 +899,124 @@ ANALYSIS_SYSTEM_PROMPT = """You are an expert cannabis Certificate of Analysis (
 
 - "analysis": The analysis type name (string)
 - "results": A list of result objects, each with:
-  | Field | Type | Example | Description |
-  |-------|------|---------|-------------|
-  | key | str | "delta_9_thc" | Standardized analyte key (snake_case) |
-  | name | str | "Δ9-THC" | Lab's displayed name |
-  | value | float | 20.00 | Measured value |
-  | units | str | "percent" | Units: "percent", "mg/g", "ug/g", "ppm", "ppb", "cfu/g", "aW" |
-  | limit | float | 0.0 | Action limit (0.0 if not shown) |
-  | lod | float | 0.0 | Limit of detection |
-  | loq | float | 0.0 | Limit of quantification |
-  | status | str | "pass" | "pass", "fail", or "" |
+  | Field | Type | Description |
+  |-------|------|-------------|
+  | key | str | Standardized analyte key (snake_case) |
+  | name | str | Lab's displayed analyte name (as printed) |
+  | value | float | The MEASURED TEST RESULT value (see rules below) |
+  | units | str | Units of the value field (see rules below) |
+  | limit | float | Action/regulatory limit (0.0 if not shown) |
+  | lod | float | Limit of Detection (0.0 if not shown) |
+  | loq | float | Limit of Quantification (0.0 if not shown) |
+  | status | str | "pass", "fail", or "" |
 
-Rules:
-- Extract ONLY results for the specified analysis.
-- Use the standardized key format (snake_case).
-- If a value shows "ND" (not detected), use 0.0.
-- If a value shows "<LOQ", use the LOQ value minus 0.01.
-- Include ALL analytes shown, even if they are not in the standard list."""
+═══════════════════════════════════════════════════════════════
+CRITICAL: HOW TO READ COA TABLES CORRECTLY
+═══════════════════════════════════════════════════════════════
+
+Cannabis COA tables typically have MULTIPLE numeric columns per analyte. It is essential to identify the correct column for each field. Common layouts include:
+
+LAYOUT A (Cannabinoids/Terpenes — dual-unit):
+  Analyte | LOD(%) | LOQ(%) | Result(%) | Result(mg/g)
+  Δ9-THC  |  0.01  |  0.03  |  73.771   |  737.71
+
+LAYOUT B (Cannabinoids/Terpenes — single-unit with separate LOD):
+  Analyte | Result(%) | LOD(%) | LOQ(%) | Status
+  Δ9-THC  |  73.771   |  0.01  |  0.03  |  Pass
+
+LAYOUT C (Pesticides/Heavy Metals):
+  Analyte    | Result(ppb) | LOD(ppb) | LOQ(ppb) | Limit(ppb) | Status
+  Abamectin  |    ND       |   10     |   20     |   100      |  Pass
+
+LAYOUT D (Microbials):
+  Analyte        | Result(cfu/g) | Limit(cfu/g) | Status
+  Total Aerobic  |    <100       |   10000      |  Pass
+
+KEY RULES FOR IDENTIFYING THE CORRECT VALUE:
+
+1. VALUE = the TEST RESULT, not LOD or LOQ.
+   - The "Result", "Concentration", "Amount", or "Tested" column is the value.
+   - LOD and LOQ are METHOD parameters (detection/quantification limits). They are NOT test results.
+   - LOD is always ≤ LOQ. Both are usually small numbers near zero.
+   - If you see a column header with "LOD" or "LOQ" or "Detection" or "Quantification", that column goes in the lod or loq field, NOT the value field.
+
+2. UNIT PREFERENCE for Cannabinoids and Terpenes:
+   - PREFERRED: percent (%) — report values from the "%" or "Result(%)" column.
+   - If a COA shows BOTH percent AND mg/g columns, use the PERCENT column for "value" and "percent" for "units".
+   - If a COA shows ONLY mg/g (no percent column), use mg/g and set units to "mg/g".
+   - EXCEPTION for EDIBLES: Use "mg" (milligrams per serving/package) or "mg/g" as shown. Edible COAs commonly report potency in mg, which is correct.
+   - How to tell the columns apart: percent values for cannabinoids are typically 0-100 (e.g., 73.771%). The mg/g equivalent is 10× larger (e.g., 737.71 mg/g). If you see two columns where one is exactly 10× the other, the smaller one is percent.
+
+3. UNIT PREFERENCE for Pesticides and Heavy Metals:
+   - Use the units shown on the COA: typically "ppb", "ppm", "ug/g", or "ug/kg".
+   - The RESULT column contains the test result. "ND" (Not Detected) = 0.0.
+   - The ACTION LIMIT column goes in the "limit" field.
+
+4. UNIT PREFERENCE for Microbials:
+   - Use "cfu/g" (colony forming units per gram) as shown.
+   - For mycotoxin tests, use "ppb" or "ug/kg" as shown.
+
+5. UNIT PREFERENCE for Moisture and Water Activity:
+   - Moisture content: use "percent".
+   - Water activity (aW): use "aW" (dimensionless, typically 0.0-1.0).
+
+6. HANDLING SPECIAL VALUES:
+   - "ND" (Not Detected) → value = 0.0
+   - "<LOQ" → value = 0.0 (the analyte was detected but below quantification)
+   - "N/A" or blank → value = 0.0
+   - "Pass"/"Fail" in the result column (with no numeric value) → value = 0.0, set status field instead
+
+7. GENERAL:
+   - Extract ONLY results for the specified analysis type.
+   - Use standardized analyte keys (snake_case).
+   - Include ALL analytes shown in the table, even if not in the standard key list.
+   - LOD and LOQ should use the same units as the value field where possible."""
 
 ANALYSIS_USER_PROMPT = (
     'Extract ONLY the %s results from this COA page(s). '
     'Standard analyte keys for this analysis:\n\n%s\n\n'
+    'Remember: "value" = the TEST RESULT column (not LOD or LOQ). '
+    'For cannabinoids/terpenes, prefer the percent (%%) column over mg/g. '
     'Return valid JSON with "analysis" and "results" fields.'
+)
+
+SINGLE_PAGE_SYSTEM_PROMPT = """You are an expert cannabis Certificate of Analysis (COA) parser. This is a single-page COA. Extract ALL available data in one pass.
+
+Return JSON with these top-level fields:
+- "metadata": Object with product_name, strain_name, product_type, date_tested, date_received, date_collected, batch_number, batch_size, lab, lab_license_number, lab_address, lab_city, lab_state, lab_zipcode, producer, producer_street, producer_city, producer_state, producer_zipcode, producer_license_number, distributor, distributor_license_number, sample_id, sample_weight, total_cannabinoids, total_cbd, total_thc, total_terpenes, status, analyses.
+- "cannabinoids": List of result objects for cannabinoid analytes (if present).
+- "terpenes": List of result objects for terpene analytes (if present).
+
+Each result object: {"key": "snake_case_name", "name": "Lab Display Name", "value": 0.0, "units": "percent", "limit": 0.0, "lod": 0.0, "loq": 0.0, "status": "pass"}
+
+CRITICAL RULES:
+
+1. TOTALS IN METADATA: total_thc, total_cbd, total_cannabinoids, total_terpenes are ALWAYS in percent (%). If shown as mg/g, divide by 10 to convert.
+
+2. VALUE = TEST RESULT, not LOD or LOQ:
+   - COA tables have multiple numeric columns. The "Result" or "Concentration" column is the value.
+   - LOD (Limit of Detection) and LOQ (Limit of Quantification) are METHOD parameters — do NOT use them as the value.
+   - LOD ≤ LOQ, and both are usually small numbers near zero.
+
+3. UNIT PREFERENCE for Cannabinoids/Terpenes:
+   - PREFER percent (%) over mg/g when both columns are shown.
+   - If both appear, the percent column has smaller values (e.g., 73.771%) and the mg/g column is ~10× larger (e.g., 737.71 mg/g). Use the percent column.
+   - EXCEPTION for edibles: use mg or mg/g as shown on the COA.
+
+4. HANDLING SPECIAL VALUES: "ND" = 0.0. "<LOQ" = 0.0. Blank = 0.0.
+
+5. DEFAULT VALUES: 0.0 for missing numeric fields, "" for missing strings. Dates in ISO format (YYYY-MM-DD). product_type in lowercase (flower, concentrate, edible, preroll, vape, tincture).
+
+6. LICENSE/SAMPLE IDs: Copy EVERY character carefully — distinguish 0/O, 1/I/l, 8/B, 5/S.
+
+7. Include ALL analytes shown on the COA. If only cannabinoids are present (e.g., hemp COAs), leave "terpenes" as an empty list. If additional analyses (pesticides, heavy metals, etc.) are present, include them as additional keys."""
+
+SINGLE_PAGE_USER_PROMPT = (
+    'Extract ALL metadata and lab test results from this single-page COA. '
+    'Remember: "value" = the TEST RESULT column (not LOD/LOQ). '
+    'For cannabinoids/terpenes, prefer percent (%) over mg/g. '
+    'Return valid JSON with "metadata", "cannabinoids", and "terpenes" fields '
+    '(plus any additional analyses found).'
 )
 
 
@@ -1058,12 +1183,18 @@ def get_pdf_pages_as_images(
             elif page_indexes == 'all':
                 pages = list(range(total_pages))
             elif page_indexes == 'keywords' and keywords:
-                pages = [0]  # Always include first page.
-                for i in range(1, total_pages):
+                # Find pages that contain any of the analysis keywords.
+                # Do NOT include page 0 by default — we only want
+                # the pages actually containing the analysis data.
+                pages = []
+                for i in range(total_pages):
                     text = (pdf.pages[i].extract_text() or '').lower()
                     if any(kw.lower() in text for kw in keywords):
                         pages.append(i)
                 pages = sorted(set(pages))
+                # If no keyword matches, fall back to page 0.
+                if not pages:
+                    pages = [0]
             else:
                 pages = [0]
 
@@ -1306,9 +1437,40 @@ class COAParser:
         ) -> str:
         """Parse a single COA PDF.
 
+        Three parsing strategies depending on COA characteristics:
+
+        1. **Single-page COAs** (1 page): One-shot parse extracts
+           metadata + all results in a single API call.
+        2. **Multi-page COAs with text** (2+ pages): Page-targeted
+           extraction — page 1 for metadata, keyword-matched pages
+           for each analysis.
+        3. **Image-only COAs** (no extractable text): Falls back to
+           sending the full PDF via the Responses API so the model
+           can OCR the content.
+
         Returns 'parsed' or 'skipped'.
         """
-        # ── Step 1: Parse metadata ──────────────────────────────
+        # ── Pre-flight: PDF info ─────────────────────────────────
+        pdf_info = get_pdf_info(file_path)
+        num_pages = pdf_info.get('num_pages', 1)
+        has_text = pdf_info.get('has_text', False)
+        detected_from_pdf = pdf_info.get('detected_analyses', [])
+        is_single_page = num_pages == 1
+
+        # ── FAST PATH: Single-page COAs ──────────────────────────
+        if is_single_page:
+            return self._parse_single_page_coa(
+                pdf_hash, file_path, pdf_info, analyses,
+            )
+
+        # ── STANDARD PATH: Multi-page COAs ───────────────────────
+
+        # Check for image-only PDFs (OCR needed).
+        is_image_only = not has_text and not detected_from_pdf
+
+        # ── Step 1: Parse metadata ───────────────────────────────
+        # Strategy: Page 1 only. If key fields are missing
+        # (cover sheet), retry with pages 1+2.
 
         if self.metadata_cache.get(pdf_hash):
             self.logger.info(f'Metadata cached: {pdf_hash[:12]}...')
@@ -1317,36 +1479,55 @@ class COAParser:
             self.logger.info('Parsing metadata...')
             start = time.time()
 
-            with tempfile.TemporaryDirectory() as tmpdir:
-                # Determine strategy.
-                pdf_info = get_pdf_info(file_path)
-
-                if self.ai_client.supports_pdf:
-                    # Send PDF directly (Anthropic, Gemini).
-                    self.logger.info(
-                        f'Strategy: native PDF ({pdf_info.get("num_pages", "?")} pages)'
-                    )
-                    parsed, cost, in_tok, out_tok = self.ai_client.parse_metadata(
-                        pdf_path=file_path,
-                    )
-                else:
-                    # Convert to page images (OpenAI, xAI).
-                    num_pages = pdf_info.get('num_pages', 1)
-                    page_idx = [0, 1] if num_pages > 1 else [0]
+            if is_image_only:
+                # Image-only PDF: send full PDF for OCR.
+                self.logger.info(
+                    f'Strategy: full PDF via Responses API '
+                    f'({num_pages} pages, image-only/OCR)'
+                )
+                parsed, cost, in_tok, out_tok = self.ai_client.parse_metadata(
+                    pdf_path=file_path,
+                )
+            else:
+                # Text-based PDF: page 1 image only.
+                with tempfile.TemporaryDirectory() as tmpdir:
                     images = get_pdf_pages_as_images(
-                        file_path, page_indexes=page_idx,
+                        file_path, page_indexes=[0],
                         output_dir=tmpdir,
                     )
-                    text = extract_pdf_text(file_path)
                     self.logger.info(
-                        f'Strategy: {len(images)} page images'
-                        f'{" + text" if not images else ""}'
+                        f'Strategy: page 1 image (of {num_pages} total)'
                     )
                     parsed, cost, in_tok, out_tok = self.ai_client.parse_metadata(
                         pdf_path=None,
                         page_images=images if images else None,
-                        page_text=text if not images else None,
+                        page_text=None,
                     )
+
+                # Retry with pages 1+2 if key metadata fields are missing.
+                if parsed and self._metadata_needs_retry(parsed):
+                    self.logger.info(
+                        'Key metadata fields missing — retrying '
+                        'with pages 1+2 (likely cover sheet)...'
+                    )
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        images = get_pdf_pages_as_images(
+                            file_path, page_indexes=[0, 1],
+                            output_dir=tmpdir,
+                        )
+                        parsed2, cost2, in2, out2 = self.ai_client.parse_metadata(
+                            pdf_path=None,
+                            page_images=images if images else None,
+                            page_text=None,
+                        )
+                    if parsed2:
+                        # Merge: prefer non-empty fields from retry.
+                        for k, v in parsed2.items():
+                            if v and (not parsed.get(k) or parsed.get(k) in ('', 0.0, [])):
+                                parsed[k] = v
+                        cost += cost2
+                        in_tok += in2
+                        out_tok += out2
 
             if parsed is None:
                 self.logger.warning(f'Metadata parse failed: {pdf_hash[:12]}...')
@@ -1370,16 +1551,14 @@ class COAParser:
                 f'Metadata parsed: ${cost:.4f}, {round(elapsed)}s'
             )
 
-        # ── Step 2: Determine which analyses to parse ───────────
+        # ── Step 2: Determine which analyses to parse ────────────
 
         product_type = normalize_product_type(
             metadata.get('product_type', '')
         )
         detected = metadata.get('analyses', [])
-        pdf_info = get_pdf_info(file_path)
-        detected_from_pdf = pdf_info.get('detected_analyses', [])
 
-        # Combine detected analyses from metadata and PDF scan.
+        # Combine detected analyses from metadata and PDF text scan.
         all_detected = set(detected_from_pdf)
         for a in (detected or []):
             a_lower = a.lower().replace(' ', '_')
@@ -1408,7 +1587,7 @@ class COAParser:
             f'Target analyses: {target_analyses}'
         )
 
-        # ── Step 3: Parse each analysis ─────────────────────────
+        # ── Step 3: Parse each analysis ──────────────────────────
 
         for analysis_name in target_analyses:
             cache = self.analysis_caches[analysis_name]
@@ -1430,28 +1609,33 @@ class COAParser:
             self.logger.info(f'Parsing {analysis_name}...')
             start = time.time()
 
-            with tempfile.TemporaryDirectory() as tmpdir:
-                if self.ai_client.supports_pdf:
-                    # For PDF-capable providers (Anthropic, Gemini).
-                    self.logger.info(f'{analysis_name}: strategy=native PDF')
-                    parsed, cost, in_tok, out_tok = self.ai_client.parse_analysis(
-                        analysis_name=analysis_name,
-                        analyte_keys=analyte_keys,
-                        pdf_path=file_path,
-                    )
-                else:
-                    # Use keyword-targeted page images (OpenAI, xAI).
+            if is_image_only:
+                # Image-only PDF: send full PDF for OCR.
+                self.logger.info(
+                    f'{analysis_name}: strategy=full PDF (image-only/OCR)'
+                )
+                parsed, cost, in_tok, out_tok = self.ai_client.parse_analysis(
+                    analysis_name=analysis_name,
+                    analyte_keys=analyte_keys,
+                    pdf_path=file_path,
+                )
+            else:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    # Keyword-targeted page images.
                     images = get_pdf_pages_as_images(
                         file_path,
                         page_indexes='keywords',
                         keywords=keywords,
                         output_dir=tmpdir,
                     )
-                    text = extract_pdf_text(file_path, keywords=keywords) if not images else None
+                    text = extract_pdf_text(
+                        file_path, keywords=keywords,
+                    ) if not images else None
+                    n_pages = len(images) if images else 0
                     self.logger.info(
                         f'{analysis_name}: strategy='
-                        f'{len(images)} keyword-targeted images'
-                        f'{" + text" if text else ""}'
+                        f'{n_pages} keyword-targeted page(s)'
+                        f'{" + text fallback" if text and not images else ""}'
                     )
                     parsed, cost, in_tok, out_tok = self.ai_client.parse_analysis(
                         analysis_name=analysis_name,
@@ -1485,6 +1669,132 @@ class COAParser:
             else:
                 self.logger.warning(f'{analysis_name}: parse failed')
 
+        return 'parsed'
+
+    def _metadata_needs_retry(self, parsed: Dict) -> bool:
+        """Check if metadata is missing key fields (likely a cover sheet).
+
+        Returns True if product_name, date_tested, AND producer are
+        all empty — a strong signal that page 1 is a cover sheet.
+        """
+        product_name = parsed.get('product_name', '') or ''
+        date_tested = parsed.get('date_tested', '') or ''
+        producer = parsed.get('producer', '') or ''
+        # Retry if at least 2 of the 3 critical fields are empty.
+        missing = sum(1 for v in [product_name, date_tested, producer] if not v.strip())
+        return missing >= 2
+
+    def _parse_single_page_coa(
+            self,
+            pdf_hash: str,
+            file_path: str,
+            pdf_info: Dict,
+            analyses: Optional[List[str]] = None,
+        ) -> str:
+        """Fast path for single-page COAs.
+
+        Extracts metadata + all results in ONE API call using the
+        combined single-page prompt. This reduces 7 API calls to 1
+        for simple COAs (e.g., hemp cannabinoid-only reports).
+
+        Returns 'parsed' or 'skipped'.
+        """
+        # Check if everything is already cached.
+        if self.metadata_cache.get(pdf_hash):
+            self.logger.info(f'Metadata cached: {pdf_hash[:12]}...')
+            metadata = self.metadata_cache.get(pdf_hash)
+
+            # Check if analyses are cached too.
+            all_cached = True
+            for analysis_name in ANALYSIS_CONFIGS:
+                if analyses and analysis_name not in analyses:
+                    continue
+                cache = self.analysis_caches.get(analysis_name)
+                if cache and not cache.get(pdf_hash):
+                    all_cached = False
+                    break
+            if all_cached:
+                self.logger.info('All analyses cached for single-page COA.')
+                return 'parsed'
+
+        self.logger.info(f'Single-page COA — one-shot parse...')
+        start = time.time()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            images = get_pdf_pages_as_images(
+                file_path, page_indexes=[0], output_dir=tmpdir,
+            )
+            text = extract_pdf_text(file_path) if not images else None
+            parsed, cost, in_tok, out_tok = self.ai_client.parse_single_page(
+                page_images=images if images else None,
+                page_text=text if not images else None,
+            )
+
+        if parsed is None:
+            self.logger.warning(f'Single-page parse failed: {pdf_hash[:12]}...')
+            return 'skipped'
+
+        elapsed = time.time() - start
+
+        # ── Extract metadata from combined response ──────────────
+        meta_data = parsed.get('metadata', {})
+        if not meta_data:
+            # If model returned flat structure, treat the whole
+            # response as metadata + results mixed together.
+            meta_data = {k: v for k, v in parsed.items()
+                         if k not in ANALYSIS_CONFIGS}
+
+        metadata = {
+            'pdf_hash': pdf_hash,
+            'parsing_model': self.ai_client.model,
+            'parsing_provider': self.ai_client.provider,
+            'parsing_time': round(elapsed, 2),
+            'parsing_cost': round(cost, 6),
+            **meta_data,
+        }
+        self.metadata_cache.set(pdf_hash, metadata)
+
+        # ── Extract analysis results from combined response ──────
+        analysis_count = 0
+        for analysis_name in ANALYSIS_CONFIGS:
+            if analyses and analysis_name not in analyses:
+                continue
+            cache = self.analysis_caches.get(analysis_name)
+            if not cache:
+                continue
+
+            # Look for results under the analysis name key.
+            results = parsed.get(analysis_name, [])
+            if isinstance(results, dict):
+                results = results.get('results', [])
+            if not isinstance(results, list):
+                results = []
+
+            cache_entry = {
+                'pdf_hash': pdf_hash,
+                'parsing_model': self.ai_client.model,
+                'parsing_provider': self.ai_client.provider,
+                'parsing_time': round(elapsed, 2),
+                'parsing_cost': round(cost / max(analysis_count + 1, 1), 6),
+                'results': results,
+            }
+            cache.set(pdf_hash, cache_entry)
+            if results:
+                analysis_count += 1
+
+        self.cost_tracker.record(
+            self.ai_client.provider, self.ai_client.model,
+            in_tok, out_tok, cost, 'single_page', pdf_hash,
+        )
+
+        product_type = normalize_product_type(
+            meta_data.get('product_type', '')
+        )
+        self.logger.info(
+            f'Single-page parsed: {product_type}, '
+            f'{analysis_count} analyses with data, '
+            f'${cost:.4f}, {round(elapsed)}s'
+        )
         return 'parsed'
 
     def get_cache_stats(self) -> Dict:
