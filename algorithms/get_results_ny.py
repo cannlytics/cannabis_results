@@ -1,203 +1,402 @@
 """
-Get Results | New York
-Copyright (c) 2024 Cannlytics
+Get Results | New York (Coordinator)
+Copyright (c) 2024-2026 Cannlytics
 
-Authors: Keegan Skeate <https://github.com/keeganskeate>
+Authors:
+    Keegan Skeate <https://github.com/keeganskeate>
 Created: 6/24/2024
-Updated: 12/10/2024
-License: MIT License <https://github.com/cannlytics/cannlytics/blob/main/LICENSE>
+Updated: 2/28/2026
+License: CC-BY-4.0 <https://creativecommons.org/licenses/by/4.0/>
 
 Description:
+    Orchestrate all New York cannabis COA collection algorithms.
+    Coordinates four independent data source collectors:
 
-    Collect New York cannabis lab results from multiple data sources.
+    1. Cannabis Realm (primary) — Dispensary menu scraping
+    2. Jetty Extracts — Google Drive folder downloads
+    3. MyCOA / MFNY — Dropbox link downloads
+    4. Hudson Cannabis — Google Drive file downloads
+
+    Each source is an independent module that can run standalone
+    or be orchestrated through this coordinator.
 
 Data Sources:
-    
+    - [Cannabis Realm NY](https://cannabisrealmny.com/)
     - [Jetty Extracts](https://jettyextracts.com/coa-new-york/)
-    - [MFNY]('https://www.mycoa.info/')
+    - [MyCOA / MFNY](https://www.mycoa.info/)
     - [Hudson Cannabis](https://www.hudsoncannabis.co/coas)
 
+Usage:
+    ```python
+    from algorithms.get_results_ny import run_ny_collection
+
+    results = run_ny_collection()
+    ```
+
+Command Line:
+    ```bash
+    # Run all NY sources
+    python algorithms/get_results_ny.py
+
+    # Run specific source
+    python algorithms/get_results_ny.py --source cannabis-realm
+    python algorithms/get_results_ny.py --source jetty-extracts
+    python algorithms/get_results_ny.py --source mycoa
+    python algorithms/get_results_ny.py --source hudson-cannabis
+
+    # Catalog-only mode (all sources)
+    python algorithms/get_results_ny.py --catalog-only
+
+    # Summary of local archives
+    python algorithms/get_results_ny.py --summary
+
+    # Run unit tests for all modules
+    python algorithms/get_results_ny.py --test
+    ```
 """
 # Standard imports:
-from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+import logging
 import os
-from typing import Optional
+from pathlib import Path
+from typing import Dict, List, Optional
 
 # External imports:
-from cannlytics.data.collectors import COACollector
-from cannlytics.data.web import download_google_drive_file
-from cannlytics.utils.utils import remove_duplicate_files
-try:
-    import gdown
-except:
-    print('Import Error: Proceeding without `gdown`.')
 import pandas as pd
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
+
+# Source module imports.
+try:
+    from get_results_ny_cannabis_realm import (
+        CannabisRealmCollector,
+        _run_tests as _test_cannabis_realm,
+    )
+except ImportError:
+    CannabisRealmCollector = None
+    _test_cannabis_realm = None
+
+try:
+    from get_results_ny_jetty_extracts import (
+        JettyExtractsCollector,
+        _run_tests as _test_jetty_extracts,
+    )
+except ImportError:
+    JettyExtractsCollector = None
+    _test_jetty_extracts = None
+
+try:
+    from get_results_ny_mycoa import (
+        MycoaCollector,
+        _run_tests as _test_mycoa,
+    )
+except ImportError:
+    MycoaCollector = None
+    _test_mycoa = None
+
+try:
+    from get_results_ny_hudson_cannabis import (
+        HudsonCannabisCollector,
+        _run_tests as _test_hudson_cannabis,
+    )
+except ImportError:
+    HudsonCannabisCollector = None
+    _test_hudson_cannabis = None
 
 
-class JettyExtractsCollector(COACollector):
-    """Collector for Jetty Extracts lab results."""
-    
-    def get_results(self) -> pd.DataFrame:
-        """Get Jetty Extracts lab results."""
-
-        # Initialize.
-        pdf_dir = os.path.join(self.pdf_dir, 'jetty-extracts')
-        os.makedirs(pdf_dir, exist_ok=True)
-        
-        # Download CSV data.
-        # FIXME: Implement CSV download
-        datafile = os.path.join(self.datasets_dir, "jetty-extracts-coas.csv")
-        
-        # Download COAs in parallel.
-        coas = pd.read_csv(datafile)
-        last_column = coas.columns[-1]
-        folder_urls = coas[last_column].values
-
-        def download_folder(url: str) -> None:
-            try:
-                gdown.download_folder(url, output=pdf_dir, quiet=False)
-            except Exception as e:
-                self.logger.error(f'Failed to download {url}: {str(e)}')
-
-        # Download folders in parallel.
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            executor.map(download_folder, folder_urls)
-        
-        # Return the results.
-        self.logger.info('✓ Collected results for Jetty Extracts (NY).')
-        return coas
+# Module-level logger.
+logger = logging.getLogger('get_results_ny')
 
 
-class MyCOACollector(COACollector):
-    """Collector for MyCOA lab results."""
-    
-    def get_results(
-            self,
-            headless: Optional[bool] = True,
-        ) -> pd.DataFrame:
-        """Get MyCOA lab results."""
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║ Source Registry                                                  ║
+# ╚══════════════════════════════════════════════════════════════════╝
 
-        # Initialize.
-        pdf_dir = os.path.join(self.pdf_dir, 'my-coa')
-        os.makedirs(pdf_dir, exist_ok=True)
-        self._init_selenium(download_dir=pdf_dir, headless=headless)
-        
-        try:
-            # Get PDF links.
-            self.driver.get('https://www.mycoa.info/')
-            WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.XPATH, "//a[contains(@href, 'dropbox.com/s')]"))
+SOURCE_REGISTRY = {
+    'cannabis-realm': {
+        'collector_class': CannabisRealmCollector,
+        'test_fn': _test_cannabis_realm,
+        'pdf_subdir': 'cannabis-realm',
+        'description': 'Cannabis Realm NY dispensary menu',
+        'priority': 1,
+    },
+    'jetty-extracts': {
+        'collector_class': JettyExtractsCollector,
+        'test_fn': _test_jetty_extracts,
+        'pdf_subdir': 'jetty-extracts',
+        'description': 'Jetty Extracts Google Drive COAs',
+        'priority': 2,
+    },
+    'mycoa': {
+        'collector_class': MycoaCollector,
+        'test_fn': _test_mycoa,
+        'pdf_subdir': 'my-coa',
+        'description': 'MyCOA / MFNY Dropbox COAs',
+        'priority': 3,
+    },
+    'hudson-cannabis': {
+        'collector_class': HudsonCannabisCollector,
+        'test_fn': _test_hudson_cannabis,
+        'pdf_subdir': 'hudson-cannabis',
+        'description': 'Hudson Cannabis Google Drive COAs',
+        'priority': 4,
+    },
+}
+
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║ Coordinator Functions                                            ║
+# ╚══════════════════════════════════════════════════════════════════╝
+
+def run_ny_collection(
+        data_dir: str = '',
+        source: Optional[str] = None,
+        catalog_only: bool = False,
+        headless: bool = True,
+        verbose: bool = True,
+    ) -> pd.DataFrame:
+    """Run New York COA collection across all or specified sources.
+
+    Args:
+        data_dir: Base data directory for NY results.
+        source: Specific source to run (None = all).
+        catalog_only: Only catalog existing PDFs.
+        headless: Run browsers headlessly.
+        verbose: Enable verbose logging.
+
+    Returns:
+        Combined DataFrame of all LabResult records.
+    """
+    if not data_dir:
+        data_dir = 'D:/data/new-york/results'
+
+    # Configure logging.
+    log = logging.getLogger('get_results_ny')
+    if not log.handlers:
+        handler = logging.StreamHandler()
+        fmt = (
+            '%(asctime)s | %(name)s | %(levelname)s | %(message)s'
+        )
+        handler.setFormatter(
+            logging.Formatter(fmt, datefmt='%Y-%m-%dT%H:%M:%S'),
+        )
+        log.addHandler(handler)
+    log.setLevel(logging.DEBUG if verbose else logging.INFO)
+
+    # Determine which sources to run.
+    if source:
+        if source not in SOURCE_REGISTRY:
+            log.error(
+                'Unknown source: %s. Available: %s',
+                source, ', '.join(SOURCE_REGISTRY.keys()),
             )
-            pdf_links = self.driver.find_elements(By.XPATH, "//a[contains(@href, 'dropbox.com/s')]")
-            pdf_urls = [link.get_attribute('href') for link in pdf_links]
-            
-            # Download PDFs.
-            for pdf_url in pdf_urls:
+            return pd.DataFrame()
+        sources_to_run = {source: SOURCE_REGISTRY[source]}
+    else:
+        sources_to_run = SOURCE_REGISTRY
 
-                # Skip if the file has already been downloaded.
-                if self.cache.get(self.cache.hash_url(pdf_url)):
-                    self.logger.info(f'Cached: {pdf_url}')
-                    continue
+    all_results = []
 
-                # Download the file.
-                self.driver.get(pdf_url)
-                download_button = WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.XPATH, "//button[@aria-label='Download']"))
-                )
-                download_button.click()
-                self.cache.set(self.cache.hash_url(pdf_url), {'downloaded': True})
-                self.logger.info(f'Downloaded: {pdf_url}')
-            
-            # Remove duplicates.
-            remove_duplicate_files(pdf_dir, verbose=True)
+    for name, config in sorted(
+        sources_to_run.items(),
+        key=lambda x: x[1]['priority'],
+    ):
+        collector_class = config['collector_class']
+        if collector_class is None:
+            log.warning(
+                'Skipping %s (module not importable)', name,
+            )
+            continue
 
-            # Return the results.
-            return pd.DataFrame({'pdf_urls': pdf_urls})
-        
-        # Clean up.
-        finally:
-            self._quit_driver()
-            self.logger.info('✓ Collected results for MyCOA (NY).')
+        log.info('=' * 60)
+        log.info('Running source: %s', name)
+        log.info('=' * 60)
 
+        pdf_dir = os.path.join(
+            data_dir, 'pdfs', config['pdf_subdir'],
+        )
 
-class HudsonCannabisCollector(COACollector):
-    """Collector for Hudson Cannabis lab results."""
-    
-    def get_results(
-            self,
-            headless: Optional[bool] = True,
-        ) -> pd.DataFrame:
-        """Get Hudson Cannabis lab results."""
-
-        # Initialize.
-        pdf_dir = os.path.join(self.pdf_dir, 'hudson-cannabis')
-        os.makedirs(pdf_dir, exist_ok=True)
-        self._init_selenium(download_dir=pdf_dir, headless=headless)
-        
         try:
-            # Get PDF links.
-            self.driver.get('https://www.hudsoncannabis.co/coas')
-            WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.ID, "root")))
-            pdf_links = self.driver.find_elements(By.XPATH, "//a[contains(@href, 'drive.google.com/file')]")
-            pdf_urls = [link.get_attribute('href') for link in pdf_links]
-            
-            # Download PDFs.
-            for pdf_url in pdf_urls:
-            
-                # Skip if the file has already been downloaded.
-                if self.cache.get(self.cache.hash_url(pdf_url)):
-                    self.logger.info(f'Cached: {pdf_url}')
-                    continue
-                
-                # Download the file.
-                pdf_name = f"{pdf_url.split('/')[-2]}.pdf"
-                save_path = os.path.join(pdf_dir, pdf_name)
-                download_google_drive_file(pdf_url, save_path)
-                self.cache.set(self.cache.hash_url(pdf_url), {'file': save_path})
-                self.logger.info(f'Downloaded: {save_path}')
-            
-            # Remove duplicates.
-            remove_duplicate_files(pdf_dir, verbose=True)
+            with collector_class(
+                pdf_dir=pdf_dir,
+                data_dir=data_dir,
+                verbose=verbose,
+            ) as collector:
+                results = collector.get_results(
+                    catalog_only=catalog_only,
+                    headless=headless,
+                )
+                if len(results) > 0:
+                    all_results.append(results)
+                    log.info(
+                        '%s: %d results', name, len(results),
+                    )
+                else:
+                    log.info('%s: 0 results', name)
 
-            # Return the results.
-            return pd.DataFrame({'pdf_urls': pdf_urls})
-        
-        # Clean up.
-        finally:
-            self._quit_driver()
-            self.logger.info('✓ Collected results for Hudson Cannabis (NY).')
+        except Exception as e:
+            log.error(
+                'Error running %s: %s', name, str(e),
+            )
+            continue
+
+    # Combine all results.
+    if all_results:
+        combined = pd.concat(all_results, ignore_index=True)
+    else:
+        combined = pd.DataFrame()
+
+    log.info('=' * 60)
+    log.info(
+        'NY collection complete: %d total results', len(combined),
+    )
+    log.info('=' * 60)
+
+    # Save combined results.
+    if len(combined) > 0:
+        datasets_dir = os.path.join(data_dir, 'datasets')
+        os.makedirs(datasets_dir, exist_ok=True)
+        output_path = os.path.join(
+            datasets_dir, 'ny-all-results.csv',
+        )
+        combined.to_csv(output_path, index=False)
+        log.info('Combined: %d records → %s', len(combined), output_path)
+
+    return combined
 
 
-# === Tests ===
-# [✓] Tested: 2024-12-11 by Keegan Skeate <keegan@cannlytics>
+def get_ny_archive_summary(
+        data_dir: str = '',
+    ) -> Dict:
+    """Get archive statistics across all NY sources.
+
+    Args:
+        data_dir: Base data directory.
+
+    Returns:
+        Dictionary with per-source and aggregate stats.
+    """
+    if not data_dir:
+        data_dir = 'D:/data/new-york/results'
+
+    summary = {'sources': {}, 'totals': {
+        'total_pdfs': 0, 'total_size_mb': 0.0,
+    }}
+
+    for name, config in SOURCE_REGISTRY.items():
+        collector_class = config['collector_class']
+        if collector_class is None:
+            continue
+
+        pdf_dir = os.path.join(
+            data_dir, 'pdfs', config['pdf_subdir'],
+        )
+        try:
+            collector = collector_class(
+                pdf_dir=pdf_dir, data_dir=data_dir,
+            )
+            stats = collector.archive_stats()
+            summary['sources'][name] = stats
+            summary['totals']['total_pdfs'] += stats.get(
+                'total_pdfs', 0,
+            )
+            summary['totals']['total_size_mb'] += stats.get(
+                'total_size_mb', 0.0,
+            )
+        except Exception:
+            summary['sources'][name] = {'error': 'unavailable'}
+
+    summary['totals']['total_size_mb'] = round(
+        summary['totals']['total_size_mb'], 2,
+    )
+    return summary
+
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║ CLI Entry Point                                                  ║
+# ╚══════════════════════════════════════════════════════════════════╝
+
 if __name__ == '__main__':
+    import argparse
 
-    # # Get Jetty Extracts results.
-    # collector = JettyExtractsCollector(
-    #     data_dir='D:/data/new-york/results',
-    #     pdf_dir='D:/data/new-york/results/pdfs/jetty-extracts',
-    #     cache_path='D://data/.cache/results-ny-jetty-extracts.jsonl',
-    #     log_name='get_results_ny_jetty_extracts',
-    # )
-    # results = collector.get_results()
-
-    # Get MyCOA results.
-    collector = MyCOACollector(
-        data_dir='D:/data/new-york/results',
-        pdf_dir='D:/data/new-york/results/pdfs/my-coa',
-        cache_path='D://data/.cache/results-ny-my-coa.jsonl',
-        log_name='get_results_ny_my_coa',
+    parser = argparse.ArgumentParser(
+        description='New York Cannabis COA Collection Coordinator',
     )
-    results = collector.get_results(headless=False)
-
-    # Get Hudson Cannabis results.
-    collector = HudsonCannabisCollector(
-        data_dir='D:/data/new-york/results',
-        pdf_dir='D:/data/new-york/results/pdfs/hudson-cannabis',
-        cache_path='D://data/.cache/results-ny-hudson-cannabis.jsonl',
-        log_name='get_results_ny_hudson_cannabis',
+    parser.add_argument(
+        '--source',
+        choices=list(SOURCE_REGISTRY.keys()),
+        default=None,
+        help='Run specific source (default: all)',
     )
-    results = collector.get_results(headless=False)
+    parser.add_argument(
+        '--data-dir', default='',
+        help='Base data directory',
+    )
+    parser.add_argument(
+        '--catalog-only', action='store_true',
+        help='Only catalog existing PDFs',
+    )
+    parser.add_argument(
+        '--headless', action='store_true', default=True,
+        help='Run browsers headlessly',
+    )
+    parser.add_argument(
+        '--no-headless', action='store_true',
+        help='Show browser windows',
+    )
+    parser.add_argument(
+        '--summary', action='store_true',
+        help='Show archive summary statistics',
+    )
+    parser.add_argument(
+        '--test', action='store_true',
+        help='Run unit tests for all modules',
+    )
+    args = parser.parse_args()
+
+    if args.test:
+        print('Running unit tests for all NY modules...\n')
+        test_fns = [
+            ('Cannabis Realm', _test_cannabis_realm),
+            ('Jetty Extracts', _test_jetty_extracts),
+            ('MyCOA', _test_mycoa),
+            ('Hudson Cannabis', _test_hudson_cannabis),
+        ]
+        for name, fn in test_fns:
+            if fn is not None:
+                print(f'=== {name} ===')
+                fn()
+                print()
+            else:
+                print(f'=== {name} === (skipped: not importable)')
+        print('All NY module tests complete.')
+        raise SystemExit(0)
+
+    if args.summary:
+        summary = get_ny_archive_summary(
+            data_dir=args.data_dir,
+        )
+        print('\n📊 New York Archive Summary')
+        print('=' * 50)
+        for name, stats in summary['sources'].items():
+            if 'error' in stats:
+                print(f'  {name}: {stats["error"]}')
+            else:
+                print(
+                    f'  {name}: {stats.get("total_pdfs", 0)} PDFs '
+                    f'({stats.get("total_size_mb", 0)} MB)',
+                )
+        print('-' * 50)
+        print(
+            f'  TOTAL: {summary["totals"]["total_pdfs"]} PDFs '
+            f'({summary["totals"]["total_size_mb"]} MB)',
+        )
+        raise SystemExit(0)
+
+    headless = args.headless and not args.no_headless
+
+    results = run_ny_collection(
+        data_dir=args.data_dir,
+        source=args.source,
+        catalog_only=args.catalog_only,
+        headless=headless,
+    )
+    print(f'\nTotal results: {len(results)}')

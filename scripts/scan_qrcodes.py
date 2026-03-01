@@ -976,6 +976,18 @@ class QRScanner:
             self.logger.info('No URLs found to export.')
             return ''
 
+        # Sanitize URLs: strip whitespace, remove embedded newlines,
+        # tabs, and carriage returns that can break CSV serialization.
+        # Some QR payloads contain these characters.
+        url_df['coa_url'] = (
+            url_df['coa_url']
+            .str.strip()
+            .str.replace(r'[\r\n\t]', '', regex=True)
+        )
+
+        # Drop any rows where sanitization emptied the URL.
+        url_df = url_df.loc[url_df['coa_url'] != '']
+
         # Determine output path.
         if not output_path:
             datasets_dir = (
@@ -986,7 +998,7 @@ class QRScanner:
                 datasets_dir / f'qr-urls-{self.state}.csv'
             )
 
-        url_df.to_csv(output_path, index=False)
+        url_df.to_csv(output_path, index=False, escapechar='\\')
         self.logger.info(
             f'Exported {len(url_df):,} URLs to {output_path}'
         )
