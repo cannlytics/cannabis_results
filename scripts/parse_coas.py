@@ -262,6 +262,29 @@ STATE_NAMES = {
     'wa': 'washington',
 }
 
+# ── Bayesian Analysis Skip Rules ─────────────────────────────────
+# Product-type-specific priors for analyses that are known to be
+# unnecessary based on domain knowledge and observed zero-result
+# patterns. When metadata reveals the product type, we update our
+# beliefs about which analyses to parse — skipping those with a
+# near-zero prior probability of yielding results.
+#
+# Structure: {analysis_name: [product_types_to_skip]}
+# Rationale is documented per rule so future additions are traceable.
+ANALYSIS_SKIP_RULES = {
+    # Edibles are almost never tested for terpenes. Terpene
+    # profiles are irrelevant after decarboxylation / infusion.
+    # Observed: 100% zero-result rate for edibles (11/11 in CA).
+    'terpenes': ['edible'],
+}
+
+# ── Flex Processing Configuration ────────────────────────────────
+# OpenAI Flex processing provides 50% cost reduction (Batch API
+# rates) for synchronous requests with higher latency tolerance.
+# Supported for GPT-5 family models.
+FLEX_COST_MULTIPLIER = 0.5  # 50% discount on standard rates
+FLEX_TIMEOUT = 900.0  # 15 minutes (recommended by OpenAI docs)
+
 
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║ AI Provider Clients                                              ║
@@ -323,6 +346,25 @@ class CostTracker:
         )
 
 
+def _is_flex_unavailable(error: Exception) -> bool:
+    """Check if an OpenAI error is a flex-specific Resource Unavailable.
+
+    OpenAI returns 429 "Resource Unavailable" when flex processing
+    lacks capacity. This is distinct from rate-limit 429 errors and
+    should trigger a retry with standard processing, not provider
+    exhaustion.
+    """
+    error_str = str(error).lower()
+    status_code = getattr(error, 'status_code', None)
+    if status_code == 429 and 'resource' in error_str:
+        return True
+    # Also check the error code attribute (openai SDK v1+).
+    error_code = getattr(error, 'code', '')
+    if error_code and 'resource' in str(error_code).lower():
+        return True
+    return False
+
+
 class AIClient:
     """Unified AI client supporting multiple providers."""
 
@@ -341,6 +383,8 @@ class AIClient:
         self.logger = logger or logging.getLogger(__name__)
         self.client = None
         self._exhausted = False
+        self.use_flex = provider == 'openai'  # Enable flex for OpenAI
+        self._flex_failures = 0  # Track consecutive flex failures
         self._init_client()
 
     def _init_client(self):
@@ -359,7 +403,10 @@ class AIClient:
 
         if self.provider == 'openai':
             from openai import OpenAI
-            self.client = OpenAI(api_key=api_key)
+            self.client = OpenAI(
+                api_key=api_key,
+                timeout=FLEX_TIMEOUT,  # 15min for flex processing
+            )
 
         elif self.provider == 'anthropic':
             from anthropic import Anthropic
@@ -393,13 +440,21 @@ class AIClient:
             input_tokens: int,
             output_tokens: int,
             num_images: int = 0,
+            used_flex: bool = False,
         ) -> float:
-        """Calculate the cost of a single API call."""
+        """Calculate the cost of a single API call.
+        
+        When flex processing is used, the cost is reduced by the
+        FLEX_COST_MULTIPLIER (50% discount on standard rates).
+        """
         in_rate = self.model_config['input'] / 1_000_000
         out_rate = self.model_config['output'] / 1_000_000
         token_cost = input_tokens * in_rate + output_tokens * out_rate
         image_cost = num_images * self.model_config.get('image_cost', 0.0)
-        return token_cost + image_cost
+        cost = token_cost + image_cost
+        if used_flex:
+            cost *= FLEX_COST_MULTIPLIER
+        return cost
 
     def parse_metadata(
             self,
@@ -583,12 +638,34 @@ class AIClient:
             'model': self.model,
             'messages': messages,
         }
+
+        # ── Flex processing: 50% cost reduction ──────────────
+        # Try flex first; on 429 Resource Unavailable, retry standard.
+        used_flex = False
+        if self.use_flex and self.provider == 'openai':
+            kwargs['service_tier'] = 'flex'
+            used_flex = True
+
         if self.supports_structured_output and response_schema:
-            completion = self.client.beta.chat.completions.parse(
-                **kwargs,
-                response_format=response_schema,
-                reasoning_effort='high',
-            )
+            try:
+                completion = self.client.beta.chat.completions.parse(
+                    **kwargs,
+                    response_format=response_schema,
+                    reasoning_effort='high',
+                )
+            except Exception as e:
+                if used_flex and _is_flex_unavailable(e):
+                    self.logger.info('Flex unavailable, retrying standard...')
+                    kwargs.pop('service_tier', None)
+                    used_flex = False
+                    self._flex_failures += 1
+                    completion = self.client.beta.chat.completions.parse(
+                        **kwargs,
+                        response_format=response_schema,
+                        reasoning_effort='high',
+                    )
+                else:
+                    raise
             msg = completion.choices[0].message
             if getattr(msg, 'refusal', None):
                 self.logger.warning(f'Model refused: {msg.refusal}')
@@ -599,7 +676,17 @@ class AIClient:
                 return None, 0.0, 0, 0
         else:
             kwargs['max_tokens'] = self.model_config.get('max_output_tokens', 16_384)
-            completion = self.client.chat.completions.create(**kwargs)
+            try:
+                completion = self.client.chat.completions.create(**kwargs)
+            except Exception as e:
+                if used_flex and _is_flex_unavailable(e):
+                    self.logger.info('Flex unavailable, retrying standard...')
+                    kwargs.pop('service_tier', None)
+                    used_flex = False
+                    self._flex_failures += 1
+                    completion = self.client.chat.completions.create(**kwargs)
+                else:
+                    raise
             content = completion.choices[0].message.content
             parsed = _extract_json(content)
             if parsed is None:
@@ -609,7 +696,7 @@ class AIClient:
         in_tok = getattr(usage, 'prompt_tokens', 0) if usage else 0
         out_tok = getattr(usage, 'completion_tokens', 0) if usage else 0
         num_images = len(page_images) if page_images else 0
-        cost = self.calculate_cost(in_tok, out_tok, num_images)
+        cost = self.calculate_cost(in_tok, out_tok, num_images, used_flex=used_flex)
 
         if _temp_dir:
             import shutil
@@ -673,8 +760,24 @@ class AIClient:
                 },
             }
 
+        # ── Flex processing: 50% cost reduction ──────────────
+        used_flex = False
+        if self.use_flex:
+            kwargs['service_tier'] = 'flex'
+            used_flex = True
+
         # Call the Responses API.
-        response = self.client.responses.create(**kwargs)
+        try:
+            response = self.client.responses.create(**kwargs)
+        except Exception as e:
+            if used_flex and _is_flex_unavailable(e):
+                self.logger.info('Flex unavailable (Responses API), retrying standard...')
+                kwargs.pop('service_tier', None)
+                used_flex = False
+                self._flex_failures += 1
+                response = self.client.responses.create(**kwargs)
+            else:
+                raise
 
         # Parse the response.
         output_text = response.output_text
@@ -690,7 +793,7 @@ class AIClient:
         usage = getattr(response, 'usage', None)
         in_tok = getattr(usage, 'input_tokens', 0) if usage else 0
         out_tok = getattr(usage, 'output_tokens', 0) if usage else 0
-        cost = self.calculate_cost(in_tok, out_tok)
+        cost = self.calculate_cost(in_tok, out_tok, used_flex=used_flex)
 
         return parsed, cost, in_tok, out_tok
 
@@ -1421,11 +1524,14 @@ class COAParser:
             'skipped': skipped_count,
             'errors': error_count,
             'costs': self.cost_tracker.summary(),
+            'flex_enabled': self.ai_client.use_flex,
+            'flex_failures': self.ai_client._flex_failures,
         }
         self.logger.info(
             f'Parse complete. Parsed: {parsed_count}, '
             f'Skipped: {skipped_count}, Errors: {error_count}. '
             f'Cost: ${self.cost_tracker.total_cost:.4f}'
+            f'{" (flex)" if self.ai_client.use_flex else ""}'
         )
         return summary
 
@@ -1572,6 +1678,7 @@ class COAParser:
 
         # Filter by product type restrictions.
         target_analyses = []
+        skipped_by_rule = []
         for analysis_name in ANALYSIS_CONFIGS:
             if analyses and analysis_name not in analyses:
                 continue
@@ -1579,8 +1686,23 @@ class COAParser:
             allowed_types = config.get('product_types')
             if allowed_types and product_type not in allowed_types:
                 continue
+
+            # ── Bayesian skip rules ──────────────────────────
+            # Skip analyses with near-zero prior probability for
+            # this product type (e.g., terpenes for edibles).
+            skip_types = ANALYSIS_SKIP_RULES.get(analysis_name, [])
+            if product_type in skip_types:
+                skipped_by_rule.append(analysis_name)
+                continue
+
             if analysis_name in all_detected or not allowed_types:
                 target_analyses.append(analysis_name)
+
+        if skipped_by_rule:
+            self.logger.info(
+                f'Skipped by prior: {skipped_by_rule} '
+                f'(product_type={product_type})'
+            )
 
         self.logger.info(
             f'Product type: {product_type}. '
@@ -1964,6 +2086,8 @@ Provider Priority: anthropic > openai > gemini > xai
     print(f'\n🔬 Cannlytics AI COA Parser')
     print(f'   State: {args.state.upper()}')
     print(f'   Provider: {args.provider} ({coa_parser.ai_client.model})')
+    if coa_parser.ai_client.use_flex:
+        print(f'   Pricing: flex (50% discount)')
     if args.budget:
         print(f'   Budget: ${args.budget:.2f}')
     if args.max_parses:
@@ -1990,6 +2114,10 @@ Provider Priority: anthropic > openai > gemini > xai
     print(f'  Total API calls: {costs["total_calls"]:,}')
     if costs['by_provider']:
         print(f'  By provider: {costs["by_provider"]}')
+    if summary.get('flex_enabled'):
+        print(f'  Flex processing: enabled (50% discount)')
+        if summary.get('flex_failures', 0) > 0:
+            print(f'  Flex fallbacks: {summary["flex_failures"]}')
     print('=' * 60)
 
 
