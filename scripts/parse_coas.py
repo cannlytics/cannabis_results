@@ -675,7 +675,7 @@ class AIClient:
             except Exception:
                 return None, 0.0, 0, 0
         else:
-            kwargs['max_tokens'] = self.model_config.get('max_output_tokens', 16_384)
+            kwargs['max_completion_tokens'] = self.model_config.get('max_output_tokens', 16_384)
             try:
                 completion = self.client.chat.completions.create(**kwargs)
             except Exception as e:
