@@ -33,6 +33,22 @@ import pandas as pd
 
 
 # =============================================================================
+# Path Resolution
+# =============================================================================
+
+# Resolve repo root for config imports (scripts/ -> repo root).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+try:
+    from config.results_config import PATHS as _PATHS
+    _DEFAULT_OUTPUT_DIR = str(_PATHS.output_dir)
+except ImportError:
+    _DEFAULT_OUTPUT_DIR = os.environ.get('CANNLYTICS_OUTPUT_DIR', r'D:\data\.output')
+
+
+# =============================================================================
 # Constants
 # =============================================================================
 
@@ -130,6 +146,7 @@ VALID_COMPLETENESS_TIERS: Set[str] = {'high', 'medium', 'low'}
 VALID_ANALYSIS_TYPES: Set[str] = {
     'cannabinoids', 'terpenes', 'pesticides', 'heavy_metals',
     'microbials', 'residual_solvents', 'moisture_foreign_matter',
+    'safety', 'other',
 }
 
 # Required keys in each element of the ``results`` JSON list.
@@ -146,8 +163,8 @@ NUMERIC_RANGES = [
     ('parsing_cost',       0,  10,  'Parsing cost ($)'),
 ]
 
-# SHA-256 hex pattern (64 lowercase hexadecimal characters).
-SHA256_PATTERN = re.compile(r'^[0-9a-f]{64}$')
+# Hex hash pattern: accepts SHA-1 (40 chars) or SHA-256 (64 chars).
+HASH_PATTERN = re.compile(r'^[0-9a-f]{40}([0-9a-f]{24})?$')
 
 # Date format pattern (YYYY-MM-DD).
 DATE_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2}$')
@@ -1152,23 +1169,23 @@ class TestSuite:
             self._record(name, True, 'No bracket artifacts detected')
 
     def _test_hash_format(self):
-        """Verify pdf_hash values are valid SHA-256 hex strings."""
-        name = 'Hash Format (SHA-256)'
+        """Verify pdf_hash values are valid hex hashes (SHA-1 or SHA-256)."""
+        name = 'Hash Format'
         if 'pdf_hash' not in self.df.columns:
             self._record(name, False, 'pdf_hash column missing')
             return
 
         non_empty = self.df['pdf_hash'].loc[self.df['pdf_hash'] != '']
-        bad = non_empty[~non_empty.str.match(SHA256_PATTERN, na=False)]
+        bad = non_empty[~non_empty.str.match(HASH_PATTERN, na=False)]
 
         if len(bad) > 0:
             samples = bad.head(5).tolist()
             self._record(name, False,
-                         f'{len(bad)} invalid SHA-256 hashes',
+                         f'{len(bad)} invalid hex hashes',
                          [f'Samples: {samples}'])
         else:
             self._record(name, True,
-                         f'All {len(non_empty):,} hashes are valid SHA-256')
+                         f'All {len(non_empty):,} hashes are valid hex')
 
     def _test_duplicate_hashes(self):
         """Verify pdf_hash values are unique (no duplicate COAs)."""
@@ -1621,7 +1638,7 @@ Examples:
     parser.add_argument(
         '--csv',
         default=os.path.join(
-            os.environ.get('CANNLYTICS_OUTPUT_DIR', r'D:\data\.output'),
+            _DEFAULT_OUTPUT_DIR,
             'cannabis-results-latest.csv',
         ),
         help='Path to the CSV file to validate.',

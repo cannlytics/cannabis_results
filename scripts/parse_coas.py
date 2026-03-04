@@ -247,10 +247,16 @@ AI_PROVIDERS = {
     },
 }
 
-# Default paths (can be overridden by environment or CLI).
-DEFAULT_DATA_DIR = Path(os.environ.get('CANNLYTICS_DATA_DIR', 'D:/data'))
-DEFAULT_CACHE_DIR = Path(os.environ.get('CANNLYTICS_CACHE_DIR', 'D:/data/.cache'))
-DEFAULT_LOG_DIR = Path(os.environ.get('CANNLYTICS_LOG_DIR', 'D:/data/.logs'))
+# Default paths: prefer centralized config, fall back to env / hardcoded.
+try:
+    from config.results_config import PATHS as _PATHS
+    DEFAULT_DATA_DIR = _PATHS.data_dir
+    DEFAULT_CACHE_DIR = _PATHS.cache_dir
+    DEFAULT_LOG_DIR = _PATHS.log_dir
+except ImportError:
+    DEFAULT_DATA_DIR = Path(os.environ.get('CANNLYTICS_DATA_DIR', 'D:/data'))
+    DEFAULT_CACHE_DIR = Path(os.environ.get('CANNLYTICS_CACHE_DIR', 'D:/data/.cache'))
+    DEFAULT_LOG_DIR = Path(os.environ.get('CANNLYTICS_LOG_DIR', 'D:/data/.logs'))
 
 # State name mapping.
 STATE_NAMES = {

@@ -63,6 +63,24 @@ import pandas as pd
 
 
 # =============================================================================
+# Path Resolution
+# =============================================================================
+
+# Resolve repo root for config imports (scripts/ → repo root).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+try:
+    from config.results_config import PATHS as _PATHS
+    DEFAULT_CACHE_DIR = str(_PATHS.cache_dir)
+    DEFAULT_BUILD_DIR = str(_PATHS.build_dir)
+except ImportError:
+    DEFAULT_CACHE_DIR = os.environ.get('CANNLYTICS_CACHE_DIR', r'D:\data\.cache')
+    DEFAULT_BUILD_DIR = os.environ.get('CANNLYTICS_BUILD_DIR', r'D:\data\.build')
+
+
+# =============================================================================
 # Configuration
 # =============================================================================
 
@@ -71,10 +89,6 @@ VERSION = '1.1.0'
 
 # Reproducibility
 RANDOM_SEED = 42
-
-# Default directories
-DEFAULT_CACHE_DIR = os.environ.get('CANNLYTICS_CACHE_DIR', r'D:\data\.cache')
-DEFAULT_BUILD_DIR = os.environ.get('CANNLYTICS_BUILD_DIR', r'D:\data\.build')
 
 # Analysis types that the parsing pipeline produces.
 # Only cache files matching these types are loaded.
@@ -175,86 +189,129 @@ STATE_NAMES = {
 # (e.g., "heavy metals", "heavy_metals", "metals", "trace metals").
 # This map normalizes them to canonical names matching ANALYSIS_TYPES.
 ANALYSIS_NAME_NORMALIZATION = {
-    # Cannabinoids
-    'cannabinoids': 'cannabinoids',
-    'potency': 'cannabinoids',
-    'cannabinoid': 'cannabinoids',
-    'cannabinoid_profile': 'cannabinoids',
-    'cannabinoid profile': 'cannabinoids',
-    'cannabinoid potency': 'cannabinoids',
-    # Terpenes
-    'terpenes': 'terpenes',
-    'terpene': 'terpenes',
-    'terpene_profile': 'terpenes',
-    'terpene profile': 'terpenes',
-    'terpenoids': 'terpenes',
-    # Pesticides
-    'pesticides': 'pesticides',
-    'pesticide': 'pesticides',
-    'gcms_pesticides': 'pesticides',
-    'lcms_pesticides': 'pesticides',
-    'agricultural agents': 'pesticides',
-    'herbicides': 'pesticides',
+    # ── Cannabinoids / Potency ────────────────────────────────────
+    'cannabinoids': 'cannabinoids', 'potency': 'cannabinoids',
+    'cannabinoid': 'cannabinoids', 'cannabinoid_profile': 'cannabinoids',
+    'cannabinoid profile': 'cannabinoids', 'cannabinoid potency': 'cannabinoids',
+    'potency analysis': 'cannabinoids', 'potency details': 'cannabinoids',
+    'potency_details': 'cannabinoids', 'potency summary': 'cannabinoids',
+    'potency_summary': 'cannabinoids',
+    'potency summary (as received)': 'cannabinoids',
+    # Individual cannabinoid names → cannabinoids
+    'delta-9-thc': 'cannabinoids', 'delta-8-thc': 'cannabinoids',
+    'delta 9-thc': 'cannabinoids', 'delta 8-thc': 'cannabinoids',
+    'thca': 'cannabinoids', 'cbda': 'cannabinoids', 'cbd': 'cannabinoids',
+    'cbg': 'cannabinoids', 'cbga': 'cannabinoids', 'cbn': 'cannabinoids',
+    'cbc': 'cannabinoids', 'cbdv': 'cannabinoids', 'thcv': 'cannabinoids',
+    'total thc': 'cannabinoids', 'total cbd': 'cannabinoids',
+    'total cbg': 'cannabinoids', 'total active cannabinoids': 'cannabinoids',
+    'label claim': 'cannabinoids', 'label_claim': 'cannabinoids',
+    # ── Terpenes ──────────────────────────────────────────────────
+    'terpenes': 'terpenes', 'terpene': 'terpenes',
+    'terpene_profile': 'terpenes', 'terpene profile': 'terpenes',
+    'terpenoids': 'terpenes', 'terpenoid': 'terpenes',
+    'terpenes summary': 'terpenes', 'terpenes_summary': 'terpenes',
+    'terpenes summary (top ten)': 'terpenes', 'terpenes (top ten)': 'terpenes',
+    'terpenes panel': 'terpenes', 'terpene_testing': 'terpenes',
+    'terpenes_analysis': 'terpenes',
+    'flavonoids': 'terpenes',
+    # ── Pesticides ────────────────────────────────────────────────
+    'pesticides': 'pesticides', 'pesticide': 'pesticides',
+    'gcms_pesticides': 'pesticides', 'lcms_pesticides': 'pesticides',
+    'agricultural agents': 'pesticides', 'herbicides': 'pesticides',
     'pesticide screening': 'pesticides',
-    # Heavy metals
-    'heavy_metals': 'heavy_metals',
-    'heavy metals': 'heavy_metals',
-    'metals': 'heavy_metals',
-    'trace metals': 'heavy_metals',
-    'trace_metals': 'heavy_metals',
-    'heavy metal analysis': 'heavy_metals',
+    # ── Heavy Metals ──────────────────────────────────────────────
+    'heavy_metals': 'heavy_metals', 'heavy metals': 'heavy_metals',
+    'metals': 'heavy_metals', 'trace metals': 'heavy_metals',
+    'trace_metals': 'heavy_metals', 'heavy metal analysis': 'heavy_metals',
     'heavy metal': 'heavy_metals',
-    # Microbials
-    'microbials': 'microbials',
-    'microbial': 'microbials',
-    'microbiology': 'microbials',
-    'microbiological': 'microbials',
+    # ── Microbials ────────────────────────────────────────────────
+    'microbials': 'microbials', 'microbial': 'microbials',
+    'microbiology': 'microbials', 'microbiological': 'microbials',
     'microbiologicals': 'microbials',
-    'microbial impurities': 'microbials',
-    'microbial_impurities': 'microbials',
-    'microbial contaminants': 'microbials',
-    'microbial_contaminants': 'microbials',
-    'microbial analysis': 'microbials',
-    'pathogenic microbiology': 'microbials',
-    'aspergillus': 'microbials',
-    'salmonella': 'microbials',
-    'shiga-toxin e. coli': 'microbials',
-    'e. coli': 'microbials',
-    # Mycotoxins (fold into microbials for canonical grouping)
-    'mycotoxins': 'microbials',
-    'mycotoxin': 'microbials',
+    'microbial impurities': 'microbials', 'microbial_impurities': 'microbials',
+    'microbial contaminants': 'microbials', 'microbial_contaminants': 'microbials',
+    'microbial analysis': 'microbials', 'pathogenic microbiology': 'microbials',
+    'pathogenic_microbiology': 'microbials',
+    'pathogenic': 'microbials', 'pathogens': 'microbials',
+    'pathogenic microorganisms': 'microbials',
+    'pathogenic (qpcr)': 'microbials', 'pathogenic_qpcr': 'microbials',
+    'microbiology (qpcr)': 'microbials', 'microbiology_qpcr': 'microbials',
+    'microbiology_pcr': 'microbials', 'microbiological (qpcr)': 'microbials',
+    'aspergillus': 'microbials', 'salmonella': 'microbials',
+    'shiga-toxin e. coli': 'microbials', 'e. coli': 'microbials',
+    'mycotoxins': 'microbials', 'mycotoxin': 'microbials',
     'mycotoxin analysis': 'microbials',
-    # Residual solvents
-    'residual_solvents': 'residual_solvents',
-    'residual solvents': 'residual_solvents',
-    'solvents': 'residual_solvents',
-    'residual solvent analysis': 'residual_solvents',
-    'residual solvent': 'residual_solvents',
-    # Moisture / Foreign matter (combined analysis)
+    'total yeast and mold': 'microbials', 'total_yeast_and_mold': 'microbials',
+    'total aerobic bacteria': 'microbials', 'total_aerobic_bacteria': 'microbials',
+    # ── Residual Solvents ─────────────────────────────────────────
+    'residual_solvents': 'residual_solvents', 'residual solvents': 'residual_solvents',
+    'solvents': 'residual_solvents', 'residual solvent analysis': 'residual_solvents',
+    'residual solvent': 'residual_solvents', 'residue_solvents': 'residual_solvents',
+    # ── Moisture / Foreign Matter ─────────────────────────────────
     'moisture_foreign_matter': 'moisture_foreign_matter',
-    'moisture': 'moisture_foreign_matter',
-    'moisture content': 'moisture_foreign_matter',
+    'moisture': 'moisture_foreign_matter', 'moisture content': 'moisture_foreign_matter',
     'moisture analysis': 'moisture_foreign_matter',
     'moisture_analysis': 'moisture_foreign_matter',
-    'water activity': 'moisture_foreign_matter',
-    'water_activity': 'moisture_foreign_matter',
-    'foreign matter': 'moisture_foreign_matter',
-    'foreign_matter': 'moisture_foreign_matter',
-    'foreign': 'moisture_foreign_matter',
-    'foreign material': 'moisture_foreign_matter',
+    'moisture_content': 'moisture_foreign_matter',
+    '% moisture': 'moisture_foreign_matter', '%_moisture': 'moisture_foreign_matter',
+    'percent_moisture': 'moisture_foreign_matter',
+    'moisture_percent': 'moisture_foreign_matter',
+    'water activity': 'moisture_foreign_matter', 'water_activity': 'moisture_foreign_matter',
+    'foreign matter': 'moisture_foreign_matter', 'foreign_matter': 'moisture_foreign_matter',
+    'foreign': 'moisture_foreign_matter', 'foreign material': 'moisture_foreign_matter',
+    'foreign_material': 'moisture_foreign_matter',
     'foreign matter water activity': 'moisture_foreign_matter',
     'filth & foreign': 'moisture_foreign_matter',
     'filth_and_foreign': 'moisture_foreign_matter',
+    'filth and foreign': 'moisture_foreign_matter',
     'filth and foreign material': 'moisture_foreign_matter',
+    'filth_and_foreign_material': 'moisture_foreign_matter',
+    'filth_and_foreign_materials': 'moisture_foreign_matter',
+    'filth & foreign material': 'moisture_foreign_matter',
     'filth & foreign material analysis': 'moisture_foreign_matter',
     'filth/foreign material': 'moisture_foreign_matter',
+    'filth_foreign_material': 'moisture_foreign_matter',
+    'filth and foreign matter': 'moisture_foreign_matter',
+    'filth and foreign load': 'moisture_foreign_matter',
     'visual inspection': 'moisture_foreign_matter',
     'visual_inspection': 'moisture_foreign_matter',
-    # Other / Safety (map to nearest canonical or keep as-is)
-    'safety': 'safety',
+    # ── Safety ────────────────────────────────────────────────────
+    'safety': 'safety', 'safety analysis': 'safety',
+    # ── Other / Catch-all ─────────────────────────────────────────
     'homogeneity': 'other',
-    'total_contaminant_load': 'other',
-    'total contaminant load': 'other',
+    'total_contaminant_load': 'other', 'total contaminant load': 'other',
+    'total contaminants': 'other', 'total_contaminants': 'other',
+    'total contaminant': 'other', 'total_contaminant': 'other',
+    'analysis summary': 'other', 'analysis_summary': 'other',
+    'summary': 'other',
+    'edibles summary': 'other',
+    # ── Screen / Method suffixes ──────────────────────────────────
+    'heavy_metals_screen': 'heavy_metals', 'heavy metals screen': 'heavy_metals',
+    'heavy_metals_by_icpms': 'heavy_metals',
+    'pesticides_screen': 'pesticides', 'pesticides screen': 'pesticides',
+    'pesticides_by_lcmsms': 'pesticides',
+    'pesticides, fungicides, and growth regulators': 'pesticides',
+    'pesticides/fungicides and growth regulators': 'pesticides',
+    'pesticides_fungicides_and_growth_regulators': 'pesticides',
+    'pesticides_fungicides_growth_regulators': 'pesticides',
+    'growth regulators': 'pesticides',
+    'mycotoxins_screen': 'microbials', 'mycotoxins screen': 'microbials',
+    'mycotoxins_by_lcmsms': 'microbials',
+    'microbiological_screen': 'microbials', 'microbiological screen': 'microbials',
+    'microbes_by_qpcr': 'microbials', 'microbes': 'microbials',
+    'qpcr microbiology': 'microbials',
+    'yeast & mold': 'microbials', 'yeast and mold': 'microbials',
+    'aflatoxins': 'microbials',
+    'pathogenic testing': 'microbials', 'pathogenic_testing': 'microbials',
+    'pathogenic moisture': 'microbials',
+    # ── Additional catch-all variants ─────────────────────────────
+    'filth': 'moisture_foreign_matter',
+    'filth_and_foreign_matter': 'moisture_foreign_matter',
+    'moisture meter': 'moisture_foreign_matter',
+    'cannabinoids potency': 'cannabinoids',
+    'cannabinoid_potency': 'cannabinoids',
+    'residue solvents': 'residual_solvents',
 }
 
 
@@ -270,6 +327,20 @@ def normalize_analysis_name(name: str) -> str:
     if not name:
         return name
     key = str(name).lower().strip()
+    # Strip "name: status" patterns (e.g., "potency: completed")
+    if ':' in key:
+        key = key.split(':')[0].strip()
+    # Strip trailing status words (e.g., "heavy metals passed")
+    for suffix in (
+        ' not tested', ' not applicable', ' passed', ' tested',
+        ' completed', ' pass', ' fail', ' failed',
+    ):
+        if key.endswith(suffix):
+            key = key[:-len(suffix)].strip()
+            break
+    # Strip parenthetical status (e.g., "homogeneity (not tested)")
+    if '(' in key:
+        key = key.split('(')[0].strip()
     return ANALYSIS_NAME_NORMALIZATION.get(key, key)
 
 # Output filenames
@@ -283,8 +354,8 @@ OUTPUT_STATS_MD = 'cannabis-results-details.md'
 # =============================================================================
 
 def get_timestamp() -> str:
-    """Return current ISO timestamp."""
-    return datetime.now().isoformat()
+    """Return current date as YYYY-MM-DD."""
+    return datetime.now().strftime('%Y-%m-%d')
 
 
 def pct(numerator: int, denominator: int) -> float:
@@ -579,9 +650,20 @@ def merge_state_caches(
                 analyses_val = [a.strip() for a in analyses_val.split(',') if a.strip()]
         # Normalize analysis names to canonical forms and deduplicate.
         if isinstance(analyses_val, list):
-            normalized = list(dict.fromkeys(
-                normalize_analysis_name(a) for a in analyses_val if a
-            ))
+            normalized = []
+            seen = set()
+            for a in analyses_val:
+                if not a:
+                    continue
+                # Handle dict items: {"name": "pesticides", "status": "passed"}
+                if isinstance(a, dict):
+                    a = a.get('name', '')
+                    if not a:
+                        continue
+                canonical = normalize_analysis_name(a)
+                if canonical and canonical not in seen:
+                    normalized.append(canonical)
+                    seen.add(canonical)
             record['analyses'] = normalized
         else:
             record['analyses'] = []
@@ -866,7 +948,23 @@ def calculate_statistics(df: pd.DataFrame) -> Dict:
             analyses_list = json.loads(analyses_str) if isinstance(analyses_str, str) else analyses_str
             if isinstance(analyses_list, list):
                 for a in analyses_list:
-                    analysis_coverage[a] += 1
+                    # Handle dict items: {"name": "pesticides", ...}
+                    if isinstance(a, dict):
+                        a = a.get('name', '')
+                    name = str(a).strip()
+                    # Handle stringified Python dicts
+                    if name.startswith('{') and 'name' in name:
+                        try:
+                            import ast
+                            d = ast.literal_eval(name)
+                            if isinstance(d, dict):
+                                name = d.get('name', name)
+                        except (ValueError, SyntaxError):
+                            pass
+                    # Normalize to canonical form
+                    canonical = normalize_analysis_name(name)
+                    if canonical:
+                        analysis_coverage[canonical] += 1
         except (json.JSONDecodeError, TypeError):
             pass
 

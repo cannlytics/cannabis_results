@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Cannlytics
 Authors:
     Keegan Skeate <https://github.com/keeganskeate>
 Created: 2/1/2026
-Updated: 2/1/2026
+Updated: 3/3/2026
 License: <https://github.com/cannlytics/cannlytics/blob/main/LICENSE>
 
 Description:
@@ -40,6 +40,29 @@ class PathConfig:
     def data_dir(self) -> Path:
         """Root directory for all data files."""
         return self.base_dir
+
+    @property
+    def build_dir(self) -> Path:
+        """Directory for intermediate build artifacts."""
+        return Path(os.environ.get('CANNLYTICS_BUILD_DIR', str(self.base_dir / '.build')))
+
+    @property
+    def output_dir(self) -> Path:
+        """Directory for final pipeline output files."""
+        return Path(os.environ.get('CANNLYTICS_OUTPUT_DIR', str(self.base_dir / '.output')))
+
+    @property
+    def documents_dir(self) -> Path:
+        """Directory for generated documents (data dictionary, etc.)."""
+        return self.base_dir / 'documents' / 'build'
+
+    @property
+    def package_dir(self) -> Path:
+        """Directory for delivery-ready ZIP packages."""
+        return Path(os.environ.get(
+            'CANNLYTICS_PACKAGE_DIR',
+            str(Path(__file__).resolve().parent.parent / 'package'),
+        ))
 
     def state_dir(self, state: str) -> Path:
         """Get the data directory for a specific state.
@@ -101,6 +124,8 @@ class PathConfig:
         self.datasets_dir(state).mkdir(parents=True, exist_ok=True)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.build_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
 
 @dataclass
@@ -340,6 +365,10 @@ if __name__ == '__main__':
     print(f"California data dir: {PATHS.state_dir('ca')}")
     print(f"California PDF dir: {PATHS.pdf_dir('ca', 'flower-company')}")
     print(f"Cache path: {PATHS.cache_path('results-ca-flower-company')}")
+    print(f"Build dir: {PATHS.build_dir}")
+    print(f"Output dir: {PATHS.output_dir}")
+    print(f"Documents dir: {PATHS.documents_dir}")
+    print(f"Package dir: {PATHS.package_dir}")
     
     # Test state config
     ca_config = STATES['ca']

@@ -56,15 +56,30 @@ import pandas as pd
 
 
 # =============================================================================
+# Path Resolution
+# =============================================================================
+
+# Resolve repo root for config imports (scripts/ -> repo root).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+try:
+    from config.results_config import PATHS as _PATHS
+    DEFAULT_BUILD_DIR = str(_PATHS.build_dir)
+except ImportError:
+    DEFAULT_BUILD_DIR = os.environ.get(
+        'CANNLYTICS_BUILD_DIR', r'D:\data\.build'
+    )
+
+
+# =============================================================================
 # Configuration
 # =============================================================================
 
 VERSION = '1.0.0'
 
 # Default paths.
-DEFAULT_BUILD_DIR = os.environ.get(
-    'CANNLYTICS_BUILD_DIR', r'D:\data\.build'
-)
 DEFAULT_INPUT = os.path.join(DEFAULT_BUILD_DIR, 'cannabis-results.csv')
 
 # Valid US state codes (two-letter abbreviations).
@@ -149,11 +164,13 @@ STATUS_MAP: Dict[str, str] = {
     'pass': 'pass', 'passed': 'pass', 'passing': 'pass',
     'p': 'pass', 'compliant': 'pass', 'yes': 'pass',
     'true': 'pass', '1': 'pass',
+    'complete': 'pass', 'completed': 'pass',
     'fail': 'fail', 'failed': 'fail', 'failing': 'fail',
     'f': 'fail', 'non-compliant': 'fail', 'no': 'fail',
     'false': 'fail', '0': 'fail',
     'nt': 'nt', 'not tested': 'nt', 'n/t': 'nt',
     'not applicable': 'n/a', 'n/a': 'n/a', 'na': 'n/a',
+    'tested': '',  # "tested" indicates completion, not pass/fail
 }
 
 # Standard status values.
@@ -177,53 +194,129 @@ NUMERIC_RANGES = [
 
 # Analysis name normalization map.
 ANALYSIS_NAME_NORMALIZATION: Dict[str, str] = {
+    # ── Cannabinoids / Potency ────────────────────────────────────
     'cannabinoids': 'cannabinoids', 'potency': 'cannabinoids',
     'cannabinoid': 'cannabinoids', 'cannabinoid_profile': 'cannabinoids',
     'cannabinoid profile': 'cannabinoids', 'cannabinoid potency': 'cannabinoids',
-    'potency analysis': 'cannabinoids',
+    'potency analysis': 'cannabinoids', 'potency details': 'cannabinoids',
+    'potency_details': 'cannabinoids', 'potency summary': 'cannabinoids',
+    'potency_summary': 'cannabinoids',
+    'potency summary (as received)': 'cannabinoids',
+    # Individual cannabinoid names → cannabinoids
+    'delta-9-thc': 'cannabinoids', 'delta-8-thc': 'cannabinoids',
+    'delta 9-thc': 'cannabinoids', 'delta 8-thc': 'cannabinoids',
+    'thca': 'cannabinoids', 'cbda': 'cannabinoids', 'cbd': 'cannabinoids',
+    'cbg': 'cannabinoids', 'cbga': 'cannabinoids', 'cbn': 'cannabinoids',
+    'cbc': 'cannabinoids', 'cbdv': 'cannabinoids', 'thcv': 'cannabinoids',
+    'total thc': 'cannabinoids', 'total cbd': 'cannabinoids',
+    'total cbg': 'cannabinoids', 'total active cannabinoids': 'cannabinoids',
+    'label claim': 'cannabinoids', 'label_claim': 'cannabinoids',
+    # ── Terpenes ──────────────────────────────────────────────────
     'terpenes': 'terpenes', 'terpene': 'terpenes',
     'terpene_profile': 'terpenes', 'terpene profile': 'terpenes',
     'terpenoids': 'terpenes', 'terpenoid': 'terpenes',
+    'terpenes summary': 'terpenes', 'terpenes_summary': 'terpenes',
+    'terpenes summary (top ten)': 'terpenes', 'terpenes (top ten)': 'terpenes',
+    'terpenes panel': 'terpenes', 'terpene_testing': 'terpenes',
+    'terpenes_analysis': 'terpenes',
+    'flavonoids': 'terpenes',
+    # ── Pesticides ────────────────────────────────────────────────
     'pesticides': 'pesticides', 'pesticide': 'pesticides',
     'gcms_pesticides': 'pesticides', 'lcms_pesticides': 'pesticides',
     'agricultural agents': 'pesticides', 'herbicides': 'pesticides',
     'pesticide screening': 'pesticides',
+    # ── Heavy Metals ──────────────────────────────────────────────
     'heavy_metals': 'heavy_metals', 'heavy metals': 'heavy_metals',
     'metals': 'heavy_metals', 'trace metals': 'heavy_metals',
     'trace_metals': 'heavy_metals', 'heavy metal analysis': 'heavy_metals',
     'heavy metal': 'heavy_metals',
+    # ── Microbials ────────────────────────────────────────────────
     'microbials': 'microbials', 'microbial': 'microbials',
     'microbiology': 'microbials', 'microbiological': 'microbials',
     'microbiologicals': 'microbials',
     'microbial impurities': 'microbials', 'microbial_impurities': 'microbials',
     'microbial contaminants': 'microbials', 'microbial_contaminants': 'microbials',
     'microbial analysis': 'microbials', 'pathogenic microbiology': 'microbials',
+    'pathogenic_microbiology': 'microbials',
+    'pathogenic': 'microbials', 'pathogens': 'microbials',
+    'pathogenic microorganisms': 'microbials',
+    'pathogenic (qpcr)': 'microbials', 'pathogenic_qpcr': 'microbials',
+    'microbiology (qpcr)': 'microbials', 'microbiology_qpcr': 'microbials',
+    'microbiology_pcr': 'microbials', 'microbiological (qpcr)': 'microbials',
     'aspergillus': 'microbials', 'salmonella': 'microbials',
     'shiga-toxin e. coli': 'microbials', 'e. coli': 'microbials',
     'mycotoxins': 'microbials', 'mycotoxin': 'microbials',
     'mycotoxin analysis': 'microbials',
+    'total yeast and mold': 'microbials', 'total_yeast_and_mold': 'microbials',
+    'total aerobic bacteria': 'microbials', 'total_aerobic_bacteria': 'microbials',
+    # ── Residual Solvents ─────────────────────────────────────────
     'residual_solvents': 'residual_solvents', 'residual solvents': 'residual_solvents',
     'solvents': 'residual_solvents', 'residual solvent analysis': 'residual_solvents',
-    'residual solvent': 'residual_solvents',
+    'residual solvent': 'residual_solvents', 'residue_solvents': 'residual_solvents',
+    # ── Moisture / Foreign Matter ─────────────────────────────────
     'moisture_foreign_matter': 'moisture_foreign_matter',
     'moisture': 'moisture_foreign_matter', 'moisture content': 'moisture_foreign_matter',
     'moisture analysis': 'moisture_foreign_matter',
     'moisture_analysis': 'moisture_foreign_matter',
     'moisture_content': 'moisture_foreign_matter',
+    '% moisture': 'moisture_foreign_matter', '%_moisture': 'moisture_foreign_matter',
+    'percent_moisture': 'moisture_foreign_matter',
+    'moisture_percent': 'moisture_foreign_matter',
     'water activity': 'moisture_foreign_matter', 'water_activity': 'moisture_foreign_matter',
     'foreign matter': 'moisture_foreign_matter', 'foreign_matter': 'moisture_foreign_matter',
     'foreign': 'moisture_foreign_matter', 'foreign material': 'moisture_foreign_matter',
+    'foreign_material': 'moisture_foreign_matter',
     'foreign matter water activity': 'moisture_foreign_matter',
     'filth & foreign': 'moisture_foreign_matter',
     'filth_and_foreign': 'moisture_foreign_matter',
+    'filth and foreign': 'moisture_foreign_matter',
     'filth and foreign material': 'moisture_foreign_matter',
+    'filth_and_foreign_material': 'moisture_foreign_matter',
+    'filth_and_foreign_materials': 'moisture_foreign_matter',
+    'filth & foreign material': 'moisture_foreign_matter',
     'filth & foreign material analysis': 'moisture_foreign_matter',
     'filth/foreign material': 'moisture_foreign_matter',
+    'filth_foreign_material': 'moisture_foreign_matter',
+    'filth and foreign matter': 'moisture_foreign_matter',
+    'filth and foreign load': 'moisture_foreign_matter',
     'visual inspection': 'moisture_foreign_matter',
     'visual_inspection': 'moisture_foreign_matter',
+    # ── Safety ────────────────────────────────────────────────────
     'safety': 'safety', 'safety analysis': 'safety',
-    'homogeneity': 'other', 'total_contaminant_load': 'other',
-    'total contaminant load': 'other',
+    # ── Other / Catch-all ─────────────────────────────────────────
+    'homogeneity': 'other',
+    'total_contaminant_load': 'other', 'total contaminant load': 'other',
+    'total contaminants': 'other', 'total_contaminants': 'other',
+    'total contaminant': 'other', 'total_contaminant': 'other',
+    'analysis summary': 'other', 'analysis_summary': 'other',
+    'summary': 'other',
+    'edibles summary': 'other',
+    # ── Screen / Method suffixes ──────────────────────────────────
+    'heavy_metals_screen': 'heavy_metals', 'heavy metals screen': 'heavy_metals',
+    'heavy_metals_by_icpms': 'heavy_metals',
+    'pesticides_screen': 'pesticides', 'pesticides screen': 'pesticides',
+    'pesticides_by_lcmsms': 'pesticides',
+    'pesticides, fungicides, and growth regulators': 'pesticides',
+    'pesticides/fungicides and growth regulators': 'pesticides',
+    'pesticides_fungicides_and_growth_regulators': 'pesticides',
+    'pesticides_fungicides_growth_regulators': 'pesticides',
+    'growth regulators': 'pesticides',
+    'mycotoxins_screen': 'microbials', 'mycotoxins screen': 'microbials',
+    'mycotoxins_by_lcmsms': 'microbials',
+    'microbiological_screen': 'microbials', 'microbiological screen': 'microbials',
+    'microbes_by_qpcr': 'microbials', 'microbes': 'microbials',
+    'qpcr microbiology': 'microbials',
+    'yeast & mold': 'microbials', 'yeast and mold': 'microbials',
+    'aflatoxins': 'microbials',
+    'pathogenic testing': 'microbials', 'pathogenic_testing': 'microbials',
+    'pathogenic moisture': 'microbials',
+    # ── Additional catch-all variants ─────────────────────────────
+    'filth': 'moisture_foreign_matter',
+    'filth_and_foreign_matter': 'moisture_foreign_matter',
+    'moisture meter': 'moisture_foreign_matter',
+    'cannabinoids potency': 'cannabinoids',
+    'cannabinoid_potency': 'cannabinoids',
+    'residue solvents': 'residual_solvents',
 }
 
 # Date formats to try when parsing.
@@ -235,7 +328,7 @@ DATE_FORMATS = [
 ]
 
 # Date columns and reasonable range.
-DATE_COLUMNS = ['date_tested', 'date_received', 'date_collected']
+DATE_COLUMNS = ['date_tested', 'date_received', 'date_collected', 'date_aggregated']
 DATE_MIN = datetime(2015, 1, 1)
 DATE_MAX = datetime(2030, 12, 31)
 
@@ -436,9 +529,38 @@ def _normalize_analyses_list(analyses_raw: Any) -> List[str]:
     for name in raw_list:
         if not name:
             continue
-        key = str(name).lower().strip()
+        # Handle dict items: {"name": "pesticides", "status": "passed"}
+        if isinstance(name, dict):
+            name = name.get('name', '')
+            if not name:
+                continue
+        # Handle stringified Python dicts: "{'name': 'pesticides', ...}"
+        name_str = str(name).strip()
+        if name_str.startswith('{') and 'name' in name_str:
+            try:
+                import ast
+                parsed_dict = ast.literal_eval(name_str)
+                if isinstance(parsed_dict, dict):
+                    name_str = parsed_dict.get('name', name_str)
+            except (ValueError, SyntaxError):
+                pass
+        key = name_str.lower().strip()
+        # Strip "name: status" patterns (e.g., "potency: completed")
+        if ':' in key:
+            key = key.split(':')[0].strip()
+        # Strip trailing status words (e.g., "heavy metals passed")
+        for suffix in (
+            ' not tested', ' not applicable', ' passed', ' tested',
+            ' completed', ' pass', ' fail', ' failed',
+        ):
+            if key.endswith(suffix):
+                key = key[:-len(suffix)].strip()
+                break
+        # Strip parenthetical status (e.g., "homogeneity (not tested)")
+        if '(' in key:
+            key = key.split('(')[0].strip()
         canonical = ANALYSIS_NAME_NORMALIZATION.get(key, key)
-        if canonical not in seen:
+        if canonical and canonical not in seen:
             normalized.append(canonical)
             seen.add(canonical)
     return normalized
@@ -751,9 +873,9 @@ def validate_states(df: pd.DataFrame, report: QCReport) -> pd.DataFrame:
                 return ''
             upper = s.upper()
             if upper in ALL_VALID_REGIONS:
-                return upper if col != 'state' else s.lower()
+                return s.lower()
             if len(s) == 2:
-                return upper if upper in ALL_VALID_REGIONS else ''
+                return s.lower() if upper in ALL_VALID_REGIONS else ''
             return ''
 
         cleaned = df[col].apply(_validate_state)
@@ -961,9 +1083,35 @@ def check_cross_field_consistency(df: pd.DataFrame, report: QCReport) -> pd.Data
     if 'results' in df.columns and 'analyses' in df.columns:
         has_results = df['results'].apply(lambda v: v not in ('', '[]', None))
         no_analyses = df['analyses'].apply(lambda v: v in ('', '[]', None))
-        mismatch = (has_results & no_analyses).sum()
+        mismatch_mask = has_results & no_analyses
+        mismatch = mismatch_mask.sum()
         if mismatch > 0:
-            report.warn(f'{mismatch} records have results data but no analyses listed')
+            # Infer analyses from the 'analysis' field in results JSON.
+            for idx in df.index[mismatch_mask]:
+                try:
+                    parsed = json.loads(str(df.at[idx, 'results']))
+                    if isinstance(parsed, list):
+                        inferred = []
+                        seen = set()
+                        for entry in parsed:
+                            if isinstance(entry, dict):
+                                a = str(entry.get('analysis', '')).lower().strip()
+                                canonical = ANALYSIS_NAME_NORMALIZATION.get(a, a)
+                                if canonical and canonical not in seen:
+                                    inferred.append(canonical)
+                                    seen.add(canonical)
+                        if inferred:
+                            df.at[idx, 'analyses'] = json.dumps(inferred)
+                            found += 1
+                            fixed += 1
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            remaining = mismatch - fixed
+            if remaining > 0:
+                report.warn(
+                    f'{remaining} records still have results data '
+                    f'but no analyses listed'
+                )
     report.log(rule, found=found, fixed=fixed)
     return df
 
@@ -1000,6 +1148,18 @@ def compute_completeness_score(df: pd.DataFrame, report: QCReport) -> pd.DataFra
         return round((score / max_score) * 100, 1)
 
     df['completeness_score'] = df.apply(_score_row, axis=1)
+
+    # Derive a categorical completeness tier.
+    def _tier(score):
+        if score >= 75:
+            return 'high'
+        elif score >= 50:
+            return 'medium'
+        elif score >= 25:
+            return 'low'
+        return ''
+
+    df['completeness'] = df['completeness_score'].apply(_tier)
     avg_score = df['completeness_score'].mean()
     below_50 = (df['completeness_score'] < 50).sum()
     below_25 = (df['completeness_score'] < 25).sum()

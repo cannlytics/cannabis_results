@@ -43,19 +43,39 @@ from datetime import datetime
 import pandas as pd
 
 
+# ── Path Resolution ──────────────────────────────────────────────────────────
+
+# Resolve repo root for config imports (scripts/ -> repo root).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+try:
+    from config.results_config import PATHS as _PATHS
+    _OUTPUT_DIR = str(_PATHS.output_dir)
+    _DOCS_BUILD_DIR = str(_PATHS.documents_dir)
+    _PACKAGE_DIR = str(_PATHS.package_dir)
+except ImportError:
+    _OUTPUT_DIR = os.environ.get('CANNLYTICS_OUTPUT_DIR', r'D:\data\.output')
+    _DATA_ROOT = os.path.dirname(_OUTPUT_DIR)
+    _DOCS_BUILD_DIR = os.path.join(_DATA_ROOT, 'documents', 'build')
+    _PACKAGE_DIR = os.path.join(_REPO_ROOT, 'package')
+
+
 # ── Configuration ────────────────────────────────────────────────────────────
 
-# Source file paths (relative to this script's expected location in the repo).
+# Source file paths: use centralized config paths for pipeline outputs,
+# repo-relative path for README.
 DEFAULT_SOURCES = {
-    'csv':              '../output/cannabis-results-latest.csv',
-    'data_dictionary':  '../documents/build/cannabis-results-data-dictionary.pdf',
-    'statistics_json':  '../output/cannabis-results-statistics.json',
-    'statistics_md':    '../output/cannabis-results-statistics.md',
-    'readme':           '../README.md',
+    'csv':              os.path.join(_OUTPUT_DIR, 'cannabis-results-latest.csv'),
+    'data_dictionary':  os.path.join(_DOCS_BUILD_DIR, 'cannabis-results-data-dictionary.pdf'),
+    'statistics_json':  os.path.join(_OUTPUT_DIR, 'cannabis-results-statistics.json'),
+    'statistics_md':    os.path.join(_OUTPUT_DIR, 'cannabis-results-statistics.md'),
+    'readme':           '../README.md',  # relative to script (scripts/ -> repo root)
 }
 
-# Delivery directory (relative to this script's expected location).
-DEFAULT_OUTPUT_DIR = '../delivery'
+# Package directory for delivery-ready ZIP archives.
+DEFAULT_OUTPUT_DIR = _PACKAGE_DIR
 
 # Expected schema for verification.
 EXPECTED_COLUMNS = 44
@@ -83,11 +103,19 @@ def format_size(size_bytes: int) -> str:
 
 
 def resolve_sources(sources: dict, script_dir: str) -> dict:
-    """Resolve source paths relative to the script directory."""
+    """Resolve source paths.
+
+    Absolute paths are kept as-is.  Relative paths are resolved
+    against *script_dir*.
+    """
     resolved = {}
     for key, path in sources.items():
-        abs_path = os.path.normpath(os.path.join(script_dir, path))
-        resolved[key] = abs_path
+        if os.path.isabs(path):
+            resolved[key] = os.path.normpath(path)
+        else:
+            resolved[key] = os.path.normpath(
+                os.path.join(script_dir, path),
+            )
     return resolved
 
 

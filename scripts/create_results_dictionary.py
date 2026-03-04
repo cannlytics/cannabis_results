@@ -59,6 +59,24 @@ import pandas as pd
 
 
 # =============================================================================
+# Path Resolution
+# =============================================================================
+
+# Resolve repo root for config imports (scripts/ -> repo root).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+try:
+    from config.results_config import PATHS as _PATHS
+    DEFAULT_BUILD_DIR = str(_PATHS.build_dir)
+except ImportError:
+    DEFAULT_BUILD_DIR = os.environ.get(
+        'CANNLYTICS_BUILD_DIR', r'D:\data\.build'
+    )
+
+
+# =============================================================================
 # Version
 # =============================================================================
 
@@ -69,9 +87,6 @@ __version__ = '1.0.0'
 # Default Paths
 # =============================================================================
 
-DEFAULT_BUILD_DIR = os.environ.get(
-    'CANNLYTICS_BUILD_DIR', r'D:\data\.build'
-)
 DEFAULT_INPUT = os.path.join(DEFAULT_BUILD_DIR, 'cannabis-results.csv')
 
 
@@ -302,6 +317,28 @@ def escape_latex(text: str) -> str:
     return text
 
 
+def escape_latex_strict(text: str) -> str:
+    """Escape ALL LaTeX-special characters in dynamic data.
+
+    Unlike ``escape_latex``, this never bypasses escaping and also
+    handles curly braces.  Use for values originating from the
+    dataset (product names, analysis types, lab names, etc.) that
+    are placed inside tabularx or longtable cells.
+    """
+    if not isinstance(text, str):
+        text = str(text)
+    replacements = [
+        ('\\', '\\textbackslash{}'),
+        ('{', '\\{'), ('}', '\\}'),
+        ('&', '\\&'), ('%', '\\%'), ('$', '\\$'),
+        ('#', '\\#'), ('_', '\\_'), ('~', '\\textasciitilde{}'),
+        ('^', '\\textasciicircum{}'),
+    ]
+    for old, new in replacements:
+        text = text.replace(old, new)
+    return text
+
+
 def format_number(n: int) -> str:
     """Format a number with comma thousands separator."""
     return f'{n:,}'
@@ -386,7 +423,17 @@ def calculate_statistics(df: pd.DataFrame) -> Dict[str, Any]:
             })
 
     # ── Analysis coverage ────────────────────────────────────────
+    # Canonical analysis types that should appear in the table.
+    CANONICAL_ANALYSIS_TYPES = {
+        'cannabinoids', 'terpenes', 'pesticides', 'heavy_metals',
+        'microbials', 'residual_solvents', 'moisture_foreign_matter',
+        'safety', 'other',
+    }
     analysis_coverage: Dict[str, int] = defaultdict(int)
+    try:
+        from qc_results import ANALYSIS_NAME_NORMALIZATION as _NORM_MAP
+    except ImportError:
+        _NORM_MAP = {}
     if 'analyses' in df.columns:
         for val in df['analyses'].dropna():
             val_str = str(val).strip()
@@ -396,12 +443,42 @@ def calculate_statistics(df: pd.DataFrame) -> Dict[str, Any]:
                 parsed = json.loads(val_str)
                 if isinstance(parsed, list):
                     for a in parsed:
-                        analysis_coverage[str(a).strip()] += 1
+                        # Handle dict items: {"name": "pesticides", ...}
+                        if isinstance(a, dict):
+                            a = a.get('name', '')
+                        name = str(a).strip().lower()
+                        # Handle stringified Python dicts
+                        if name.startswith('{') and 'name' in name:
+                            try:
+                                import ast
+                                d = ast.literal_eval(name)
+                                if isinstance(d, dict):
+                                    name = d.get('name', name)
+                            except (ValueError, SyntaxError):
+                                pass
+                        # Normalize: strip status suffixes and map
+                        if ':' in name:
+                            name = name.split(':')[0].strip()
+                        for suffix in (
+                            ' not tested', ' not applicable',
+                            ' passed', ' tested', ' completed',
+                            ' pass', ' fail', ' failed',
+                        ):
+                            if name.endswith(suffix):
+                                name = name[:-len(suffix)].strip()
+                                break
+                        if '(' in name:
+                            name = name.split('(')[0].strip()
+                        canonical = _NORM_MAP.get(name, name)
+                        if canonical:
+                            analysis_coverage[canonical] += 1
             except (json.JSONDecodeError, TypeError):
                 pass
+    # Filter to canonical analysis types only.
     analysis_data = sorted(
         [{'name': k, 'count': v, 'percentage': round(100.0 * v / total, 1)}
-         for k, v in analysis_coverage.items()],
+         for k, v in analysis_coverage.items()
+         if k in CANONICAL_ANALYSIS_TYPES],
         key=lambda x: x['count'], reverse=True,
     )
 
@@ -493,6 +570,7 @@ def generate_dataset_summary_table(stats: Dict[str, Any]) -> str:
          f"\\${stats['total_parsing_cost']:.2f}"),
     ]
     lines = [
+        '{\\small',
         '\\renewcommand{\\arraystretch}{1.4}',
         '\\begin{tabularx}{\\textwidth}{@{}Xr@{}}',
         '\\toprule',
@@ -501,7 +579,7 @@ def generate_dataset_summary_table(stats: Dict[str, Any]) -> str:
     ]
     for label, value in rows:
         lines.append(f'{label} & {value} \\\\')
-    lines += ['\\bottomrule', '\\end{tabularx}']
+    lines += ['\\bottomrule', '\\end{tabularx}', '}']
     return '\n'.join(lines)
 
 
@@ -519,7 +597,7 @@ def generate_state_coverage_table(
     right = state_data[mid:]
 
     lines = [
-        '{\\footnotesize',
+        '{\\small',
         '\\renewcommand{\\arraystretch}{1.2}',
         '\\begin{tabularx}{\\textwidth}{@{}Xlr|Xlr@{}}',
         '\\toprule',
@@ -557,6 +635,7 @@ def generate_product_type_table(
     if not product_types:
         return '\\textit{No product type data available.}'
     lines = [
+        '{\\small',
         '\\renewcommand{\\arraystretch}{1.3}',
         '\\begin{tabularx}{\\textwidth}{@{}Xrrr@{}}',
         '\\toprule',
@@ -567,12 +646,13 @@ def generate_product_type_table(
     cumulative = 0.0
     for pt in product_types:
         cumulative += pt['percentage']
+        safe_name = escape_latex_strict(pt['name'])
         lines.append(
-            f"\\texttt{{{pt['name']}}} & {format_number(pt['count'])}"
+            f"\\texttt{{{safe_name}}} & {format_number(pt['count'])}"
             f" & {format_pct(pt['percentage'])}\\%"
             f" & {format_pct(cumulative)}\\% \\\\"
         )
-    lines += ['\\bottomrule', '\\end{tabularx}']
+    lines += ['\\bottomrule', '\\end{tabularx}', '}']
     return '\n'.join(lines)
 
 
@@ -583,6 +663,7 @@ def generate_analysis_coverage_table(
     if not analysis_data:
         return '\\textit{No analysis coverage data available.}'
     lines = [
+        '{\\small',
         '\\renewcommand{\\arraystretch}{1.3}',
         '\\begin{tabularx}{\\textwidth}{@{}Xrr@{}}',
         '\\toprule',
@@ -591,12 +672,12 @@ def generate_analysis_coverage_table(
         '\\midrule',
     ]
     for a in analysis_data:
-        name_display = a['name'].replace('_', '\\_')
+        name_display = escape_latex_strict(a['name'])
         lines.append(
             f'\\texttt{{{name_display}}} & {format_number(a["count"])}'
             f' & {format_pct(a["percentage"])}\\% \\\\'
         )
-    lines += ['\\bottomrule', '\\end{tabularx}']
+    lines += ['\\bottomrule', '\\end{tabularx}', '}']
     return '\n'.join(lines)
 
 
@@ -733,12 +814,15 @@ def generate_data_dictionary_latex(stats: Dict[str, Any]) -> str:
 \\usepackage{{tabularx}}
 \\usepackage{{array}}
 \\usepackage{{xcolor}}
+\\usepackage{{colortbl}}
 \\usepackage{{hyperref}}
 \\usepackage{{fancyhdr}}
 \\usepackage{{enumitem}}
+\\usepackage{{graphicx}}
 \\usepackage{{titlesec}}
 \\usepackage{{parskip}}
 \\usepackage{{setspace}}
+\\usepackage{{multirow}}
 \\usepackage{{lastpage}}
 \\usepackage{{needspace}}
 \\usepackage{{amsmath}}
@@ -748,101 +832,113 @@ def generate_data_dictionary_latex(stats: Dict[str, Any]) -> str:
 % ============================================================================
 \\geometry{{
     letterpaper,
-    top=1.0in,
-    bottom=1.0in,
     left=0.75in,
     right=0.75in,
+    top=0.85in,
+    bottom=0.85in,
 }}
+
+\\setlength{{\\parskip}}{{0.5em}}
+\\setstretch{{1.05}}
 
 % ============================================================================
 % Colors
 % ============================================================================
-\\definecolor{{canngreen}}{{HTML}}{{45B649}}
-\\definecolor{{darkgreen}}{{HTML}}{{1B4D3E}}
-\\definecolor{{lightgray}}{{HTML}}{{F5F5F5}}
-\\definecolor{{medgray}}{{HTML}}{{666666}}
+\\definecolor{{cannlyticsprimary}}{{RGB}}{{12, 75, 51}}
+\\definecolor{{cannlyticssecondary}}{{RGB}}{{45, 45, 45}}
+\\definecolor{{lightgray}}{{RGB}}{{248, 248, 248}}
+\\definecolor{{tableborder}}{{RGB}}{{200, 200, 200}}
 
 % ============================================================================
-% Styles
+% Header / Footer
+% ============================================================================
+\\pagestyle{{fancy}}
+\\fancyhf{{}}
+\\fancyhead[L]{{\\textcolor{{cannlyticssecondary}}{{\\small Cannabis Results Data Dictionary}}}}
+\\fancyhead[R]{{\\textcolor{{cannlyticssecondary}}{{\\small {stats['date']}}}}}
+\\fancyfoot[C]{{\\textcolor{{cannlyticssecondary}}{{\\small Page \\thepage\\ of \\pageref{{LastPage}}}}}}
+\\renewcommand{{\\headrulewidth}}{{0.4pt}}
+\\renewcommand{{\\footrulewidth}}{{0pt}}
+
+% ============================================================================
+% Section Formatting
+% ============================================================================
+\\titleformat{{\\section}}
+    {{\\Large\\bfseries\\color{{cannlyticsprimary}}}}
+    {{\\thesection}}{{0.8em}}{{}}
+\\titleformat{{\\subsection}}
+    {{\\normalsize\\bfseries\\color{{cannlyticssecondary}}}}
+    {{\\thesubsection}}{{0.6em}}{{}}
+
+\\titlespacing*{{\\section}}{{0pt}}{{2.5ex plus 1ex minus 0.3ex}}{{1.5ex plus 0.3ex}}
+\\titlespacing*{{\\subsection}}{{0pt}}{{1.8ex plus 0.6ex minus 0.2ex}}{{0.8ex plus 0.2ex}}
+
+% ============================================================================
+% Hyperref Setup
 % ============================================================================
 \\hypersetup{{
     colorlinks=true,
-    linkcolor=darkgreen,
-    urlcolor=darkgreen,
-    citecolor=darkgreen,
+    linkcolor=cannlyticsprimary,
+    urlcolor=cannlyticsprimary,
+    citecolor=cannlyticsprimary,
+    pdftitle={{Data Dictionary | Cannabis Results}},
+    pdfauthor={{Cannlytics}},
 }}
 
-\\titleformat{{\\section}}{{\\Large\\bfseries\\color{{darkgreen}}}}{{}}{{0em}}{{}}
-\\titleformat{{\\subsection}}{{\\large\\bfseries\\color{{darkgreen}}}}{{}}{{0em}}{{}}
-
-\\pagestyle{{fancy}}
-\\fancyhf{{}}
-\\fancyhead[L]{{\\small\\textcolor{{medgray}}{{Cannlytics Cannabis Results Data Dictionary}}}}
-\\fancyhead[R]{{\\small\\textcolor{{medgray}}{{{stats['date']}}}}}
-\\fancyfoot[C]{{\\small\\textcolor{{medgray}}{{Page \\thepage\\ of \\pageref{{LastPage}}}}}}
-\\renewcommand{{\\headrulewidth}}{{0.4pt}}
-\\renewcommand{{\\footrulewidth}}{{0pt}}
+% ============================================================================
+% Custom Commands
+% ============================================================================
+\\newcommand{{\\fieldname}}[1]{{\\texttt{{\\textbf{{#1}}}}}}
 
 % Custom column types
 \\newcolumntype{{L}}[1]{{>{{\\raggedright\\arraybackslash\\ttfamily\\small}}p{{#1}}}}
 \\newcolumntype{{C}}[1]{{>{{\\centering\\arraybackslash\\small}}p{{#1}}}}
 
-% Field name formatting
-\\newcommand{{\\fieldname}}[1]{{\\texttt{{#1}}}}
-
 % ============================================================================
-% Title Page
+% Document
 % ============================================================================
 \\begin{{document}}
 
+% ----------------------------------------------------------------------------
+% Title Page
+% ----------------------------------------------------------------------------
 \\begin{{titlepage}}
-\\begin{{center}}
+    \\centering
+    \\vspace*{{1.5cm}}
 
-\\vspace*{{2cm}}
+    {{\\Huge\\bfseries\\textcolor{{cannlyticsprimary}}{{Cannabis Results\\\\[0.5\\baselineskip]Data Dictionary}}}}
 
-{{\\fontsize{{36}}{{42}}\\selectfont\\textcolor{{darkgreen}}{{\\textbf{{Cannabis Results}}}}}}
+    \\rule{{0.5\\textwidth}}{{1pt}}
 
-\\vspace{{0.5cm}}
+    \\vspace{{0.5cm}}
 
-{{\\fontsize{{24}}{{30}}\\selectfont\\textcolor{{canngreen}}{{Data Dictionary}}}}
+    {{\\large
+    \\begin{{tabular}}{{rl}}
+    \\textbf{{Prepared by:}} & Cannlytics \\\\[0.25cm]
+    \\textbf{{Date:}} & {stats['date']} \\\\[0.25cm]
+    \\textbf{{Coverage:}} & United States \\\\[0.25cm]
+    \\textbf{{States:}} & {stats['states_covered']} \\\\[0.25cm]
+    \\textbf{{Total Records:}} & {format_number(stats['total_records'])} \\\\[0.25cm]
+    \\textbf{{Analyte Measurements:}} & {format_number(stats['total_analyte_results'])} \\\\[0.25cm]
+    \\textbf{{Update Frequency:}} & Weekly \\\\[0.25cm]
+    \\textbf{{Format:}} & CSV \\\\
+    \\end{{tabular}}
+    }}
 
-\\vspace{{1.5cm}}
+    \\vfill
 
-{{\\Large\\textcolor{{medgray}}{{Version {__version__}}}}}
+    \\vspace{{0.8cm}}
 
-\\vspace{{0.5cm}}
+    {{\\small\\textcolor{{cannlyticssecondary}}{{
+    \\textbf{{Contact:}} contact@cannlytics.com\\\\[0.25cm]
+    \\textbf{{Website:}} \\url{{https://cannlytics.com}}\\\\[0.25cm]
+    \\textcopyright\\ {stats['year']} Cannlytics. All rights reserved.
+    }}}}
 
-{{\\large\\textcolor{{medgray}}{{{stats['date']}}}}}
-
-\\vspace{{3cm}}
-
-\\rule{{0.6\\textwidth}}{{0.5pt}}
-
-\\vspace{{1cm}}
-
-{{\\Large Cannlytics}}
-
-\\vspace{{0.3cm}}
-
-{{\\large Simple Cannabis Analytics}}
-
-\\vspace{{0.5cm}}
-
-{{\\normalsize\\texttt{{https://cannlytics.com}}}}
-
-\\vfill
-
-{{\\small
-{format_number(stats['total_records'])} lab result records
-$\\cdot$ {stats['states_covered']} U.S. states
-$\\cdot$ {format_number(stats['total_analyte_results'])} analyte measurements
-}}
-
-\\end{{center}}
 \\end{{titlepage}}
 
 % ============================================================================
-\\section{{Dataset Overview}}
+\\section*{{Overview}}
 % ============================================================================
 
 The \\textbf{{Cannlytics Cannabis Results}} dataset is a comprehensive
@@ -851,7 +947,8 @@ Analysis) aggregated from publicly available sources across the
 United States. Each record represents a single COA and contains
 product metadata, producer and laboratory information, cannabinoid
 and terpene totals, contaminant screening statuses, and detailed
-per-analyte measurements.
+per-analyte measurements. For data questions, technical support,
+or licensing inquiries please email: contact@cannlytics.com
 
 \\vspace{{1em}}
 
@@ -951,7 +1048,7 @@ analysis type), merges metadata with analyte-level results, deduplicates
 by SHA-256 PDF hash, validates ranges, and exports the build CSV.
 
 \\item \\textbf{{Quality Control:}} The \\texttt{{qc\\_results.py}} pipeline
-applies 14 validation rules: string normalization, name cleaning,
+applies 18 validation rules: string normalization, name cleaning,
 date standardization, product type and status normalization, numeric
 range validation with automatic mg/g-to-percent correction, state
 validation, deduplication, JSON integrity checks, cross-field
@@ -959,7 +1056,7 @@ consistency validation, lab name standardization, and data
 completeness scoring.
 
 \\item \\textbf{{Parsing:}} COA documents are parsed using AI vision
-models (primarily \\texttt{{gpt-4.1-nano}}) with structured output.
+models (primarily \\texttt{{gpt-5-nano}}) with structured output.
 The parsing pipeline implements single-page fast-path processing,
 metadata extraction with smart retry logic, and OCR fallback detection.
 Parsing accuracy targets exceed 99\\% on potency analyses.

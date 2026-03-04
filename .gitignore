@@ -15,6 +15,7 @@ secrets/
 
 # === Datasets ===
 data/
+package/
 raw/
 
 # === Test and Temporary Data ===

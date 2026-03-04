@@ -62,6 +62,33 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 
+
+# =============================================================================
+# Path Resolution
+# =============================================================================
+
+# Resolve repo root for config imports (scripts/ -> repo root).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+# Ensure sibling scripts are importable (for create_results_dictionary).
+_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+try:
+    from config.results_config import PATHS as _PATHS
+    DEFAULT_BUILD_DIR = str(_PATHS.build_dir)
+    DEFAULT_OUTPUT_DIR = str(_PATHS.output_dir)
+except ImportError:
+    DEFAULT_BUILD_DIR = os.environ.get(
+        'CANNLYTICS_BUILD_DIR', r'D:\data\.build',
+    )
+    DEFAULT_OUTPUT_DIR = os.environ.get(
+        'CANNLYTICS_OUTPUT_DIR', r'D:\data\.output',
+    )
+
 # Data dictionary generator (optional -- graceful fallback)
 try:
     from create_results_dictionary import generate_data_dictionary
@@ -81,12 +108,6 @@ __version__ = '1.0.0'
 # Default Paths
 # =============================================================================
 
-DEFAULT_BUILD_DIR = os.environ.get(
-    'CANNLYTICS_BUILD_DIR', r'D:\data\.build',
-)
-DEFAULT_OUTPUT_DIR = os.environ.get(
-    'CANNLYTICS_OUTPUT_DIR', r'D:\data\.output',
-)
 DEFAULT_INPUT_PATH = os.path.join(DEFAULT_BUILD_DIR, 'cannabis-results.csv')
 DEFAULT_OUTPUT_PATH = os.path.join(
     DEFAULT_OUTPUT_DIR, 'cannabis-results-latest.csv',
@@ -434,6 +455,11 @@ def calculate_coverage_statistics(df: pd.DataFrame) -> Dict[str, Any]:
             }
 
     # ── Analysis coverage ────────────────────────────────────────
+    # Import normalization map to ensure consistent canonical counting.
+    try:
+        from qc_results import ANALYSIS_NAME_NORMALIZATION
+    except ImportError:
+        ANALYSIS_NAME_NORMALIZATION = {}
     analysis_counts: Dict[str, int] = defaultdict(int)
     if 'analyses' in df.columns:
         for val in df['analyses']:
@@ -444,7 +470,36 @@ def calculate_coverage_statistics(df: pd.DataFrame) -> Dict[str, Any]:
                 parsed = json.loads(val)
                 if isinstance(parsed, list):
                     for a in parsed:
-                        analysis_counts[str(a).strip()] += 1
+                        # Handle dict items: {"name": "pesticides", ...}
+                        if isinstance(a, dict):
+                            a = a.get('name', '')
+                        name = str(a).strip()
+                        # Handle stringified Python dicts
+                        if name.startswith('{') and 'name' in name:
+                            try:
+                                import ast
+                                d = ast.literal_eval(name)
+                                if isinstance(d, dict):
+                                    name = d.get('name', name)
+                            except (ValueError, SyntaxError):
+                                pass
+                        # Normalize: strip status suffixes and map
+                        key = name.lower().strip()
+                        if ':' in key:
+                            key = key.split(':')[0].strip()
+                        for suffix in (
+                            ' not tested', ' not applicable',
+                            ' passed', ' tested', ' completed',
+                            ' pass', ' fail', ' failed',
+                        ):
+                            if key.endswith(suffix):
+                                key = key[:-len(suffix)].strip()
+                                break
+                        if '(' in key:
+                            key = key.split('(')[0].strip()
+                        canonical = ANALYSIS_NAME_NORMALIZATION.get(key, key)
+                        if canonical:
+                            analysis_counts[canonical] += 1
             except (json.JSONDecodeError, TypeError):
                 pass
     by_analysis = {
