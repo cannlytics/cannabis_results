@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Cannlytics
 Authors:
     Keegan Skeate <https://github.com/keeganskeate>
 Created: 2/1/2026
-Updated: 3/3/2026
+Updated: 3/4/2026
 License: <https://github.com/cannlytics/cannlytics/blob/main/LICENSE>
 
 Description:
@@ -19,6 +19,9 @@ from pathlib import Path
 from typing import Optional, Dict, List
 import os
 
+# Repository root — resolved from config/results_config.py → cannabis_results/
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 @dataclass
 class PathConfig:
@@ -27,41 +30,94 @@ class PathConfig:
     Centralizes all file system paths to ensure consistency across
     all collection algorithms and processing pipelines.
     
+    Path layout (repo-relative by default):
+        cannabis_results/
+        ├── .build/       Intermediate build artifacts (cannabis-results.csv)
+        ├── .cache/       JSONL caches (parsed COAs, QR scans)
+        ├── data/         Per-source output datasets
+        ├── package/      ZIP packages for distribution
+        └── ...
+
+    State-level data (COA PDFs, raw downloads) lives outside the repo
+    in ``base_dir`` (default: D:/data) to keep the repo lightweight.
+
+    All defaults can be overridden via environment variables:
+        CANNLYTICS_DATA_DIR, CANNLYTICS_BUILD_DIR, CANNLYTICS_CACHE_DIR,
+        CANNLYTICS_OUTPUT_DIR, CANNLYTICS_LOG_DIR, CANNLYTICS_PACKAGE_DIR.
+    
     Attributes:
-        base_dir: Root directory for all results data.
-        cache_dir: Directory for caching downloaded URLs and parsed data.
-        log_dir: Directory for log files.
+        base_dir: Root directory for state-level data (COA PDFs, downloads).
+        repo_root: Root of the cannabis_results repository.
     """
-    base_dir: Path = field(default_factory=lambda: Path(os.environ.get('CANNLYTICS_DATA_DIR', 'D:/data')))
-    cache_dir: Path = field(default_factory=lambda: Path(os.environ.get('CANNLYTICS_CACHE_DIR', 'D:/data/.cache')))
-    log_dir: Path = field(default_factory=lambda: Path(os.environ.get('CANNLYTICS_LOG_DIR', 'D:/data/.logs')))
+    base_dir: Path = field(default_factory=lambda: Path(
+        os.environ.get('CANNLYTICS_DATA_DIR', 'D:/data')
+    ))
+    repo_root: Path = field(default_factory=lambda: _REPO_ROOT)
 
     @property
     def data_dir(self) -> Path:
-        """Root directory for all data files."""
+        """Root directory for state-level data files (COA PDFs, etc.)."""
         return self.base_dir
 
     @property
     def build_dir(self) -> Path:
-        """Directory for intermediate build artifacts."""
-        return Path(os.environ.get('CANNLYTICS_BUILD_DIR', str(self.base_dir / '.build')))
+        """Directory for intermediate build artifacts.
+        
+        Default: {repo_root}/.build/
+        Override: CANNLYTICS_BUILD_DIR environment variable.
+        """
+        return Path(os.environ.get(
+            'CANNLYTICS_BUILD_DIR',
+            str(self.repo_root / '.build'),
+        ))
+
+    @property
+    def cache_dir(self) -> Path:
+        """Directory for JSONL caches (parsed COAs, QR scans).
+        
+        Default: {repo_root}/.cache/
+        Override: CANNLYTICS_CACHE_DIR environment variable.
+        """
+        return Path(os.environ.get(
+            'CANNLYTICS_CACHE_DIR',
+            str(self.repo_root / '.cache'),
+        ))
+
+    @property
+    def log_dir(self) -> Path:
+        """Directory for log files.
+        
+        Default: {repo_root}/.logs/
+        Override: CANNLYTICS_LOG_DIR environment variable.
+        """
+        return Path(os.environ.get(
+            'CANNLYTICS_LOG_DIR',
+            str(self.repo_root / '.logs'),
+        ))
 
     @property
     def output_dir(self) -> Path:
-        """Directory for final pipeline output files."""
-        return Path(os.environ.get('CANNLYTICS_OUTPUT_DIR', str(self.base_dir / '.output')))
+        """Directory for final pipeline output files.
+        
+        Default: {repo_root}/.output/
+        Override: CANNLYTICS_OUTPUT_DIR environment variable.
+        """
+        return Path(os.environ.get(
+            'CANNLYTICS_OUTPUT_DIR',
+            str(self.repo_root / '.output'),
+        ))
 
     @property
     def documents_dir(self) -> Path:
         """Directory for generated documents (data dictionary, etc.)."""
-        return self.base_dir / 'documents' / 'build'
+        return self.repo_root / 'documents' / 'build'
 
     @property
     def package_dir(self) -> Path:
         """Directory for delivery-ready ZIP packages."""
         return Path(os.environ.get(
             'CANNLYTICS_PACKAGE_DIR',
-            str(Path(__file__).resolve().parent.parent / 'package'),
+            str(self.repo_root / 'package'),
         ))
 
     def state_dir(self, state: str) -> Path:
@@ -112,19 +168,20 @@ class PathConfig:
         """
         return self.cache_dir / f'{name}.jsonl'
 
-    def ensure_dirs(self, state: str, source: str = '') -> None:
+    def ensure_dirs(self, state: str = '', source: str = '') -> None:
         """Create all necessary directories for a state/source.
         
         Args:
-            state: Two-letter state abbreviation.
+            state: Two-letter state abbreviation (optional).
             source: Optional source identifier.
         """
-        self.state_dir(state).mkdir(parents=True, exist_ok=True)
-        self.pdf_dir(state, source).mkdir(parents=True, exist_ok=True)
-        self.datasets_dir(state).mkdir(parents=True, exist_ok=True)
+        if state:
+            self.state_dir(state).mkdir(parents=True, exist_ok=True)
+            self.pdf_dir(state, source).mkdir(parents=True, exist_ok=True)
+            self.datasets_dir(state).mkdir(parents=True, exist_ok=True)
+        self.build_dir.mkdir(parents=True, exist_ok=True)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        self.build_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
 
@@ -362,13 +419,17 @@ def get_collector_config(state: str, source: str) -> dict:
 # === Test ===
 if __name__ == '__main__':
     # Test path generation
-    print(f"California data dir: {PATHS.state_dir('ca')}")
-    print(f"California PDF dir: {PATHS.pdf_dir('ca', 'flower-company')}")
-    print(f"Cache path: {PATHS.cache_path('results-ca-flower-company')}")
+    print(f"Repo root: {PATHS.repo_root}")
+    print(f"Data dir (state-level): {PATHS.data_dir}")
     print(f"Build dir: {PATHS.build_dir}")
+    print(f"Cache dir: {PATHS.cache_dir}")
+    print(f"Log dir: {PATHS.log_dir}")
     print(f"Output dir: {PATHS.output_dir}")
     print(f"Documents dir: {PATHS.documents_dir}")
     print(f"Package dir: {PATHS.package_dir}")
+    print(f"\nCalifornia data dir: {PATHS.state_dir('ca')}")
+    print(f"California PDF dir: {PATHS.pdf_dir('ca', 'flower-company')}")
+    print(f"Cache path: {PATHS.cache_path('results-ca-flower-company')}")
     
     # Test state config
     ca_config = STATES['ca']

@@ -33,6 +33,13 @@ Usage:
     python agg_results.py --states ca fl ny
 
 Changelog:
+    v1.2.0 (2026-03-04):
+        - Added model-preference cache selection (--model flag)
+        - Default preferred model: gpt-5-nano (largest caches)
+        - When multiple models exist for same state+analysis, prefers
+          the specified model instead of most-recently-modified file
+        - Falls back to largest file by size when preferred model unavailable
+
     v1.1.0 (2026-03-02):
         - Restricted cache file pattern to only match known analysis types
           (fixes loading stale caches like 'historic', 'flower', 'archive')
@@ -85,10 +92,15 @@ except ImportError:
 # =============================================================================
 
 # Version
-VERSION = '1.1.0'
+VERSION = '1.2.0'
 
 # Reproducibility
 RANDOM_SEED = 42
+
+# Default preferred AI model for cache file selection.
+# When multiple model caches exist for the same state + analysis type,
+# files matching this model name are preferred.
+_DEFAULT_MODEL = 'gpt-5-nano'
 
 # Analysis types that the parsing pipeline produces.
 # Only cache files matching these types are loaded.
@@ -379,28 +391,40 @@ def is_jupyter() -> bool:
 def discover_cache_files(
         cache_dir: str,
         states: Optional[List[str]] = None,
+        preferred_model: Optional[str] = None,
     ) -> Dict[str, Dict[str, str]]:
     """Discover all parsed cache files organized by state and analysis type.
+
+    When multiple models exist for the same state + analysis type,
+    the file matching ``preferred_model`` is selected. If no file
+    matches the preferred model, falls back to the largest file
+    (most data) rather than the most recently modified.
 
     Args:
         cache_dir: Path to the cache directory.
         states: Optional list of state codes to filter (e.g., ['ca', 'fl']).
             If None, discovers all available states.
+        preferred_model: Preferred AI model name (e.g., 'gpt-5-nano').
+            Files matching this model are chosen over all others.
+            If None, defaults to _DEFAULT_MODEL ('gpt-5-nano').
 
     Returns:
         Nested dict: {state: {analysis_type: filepath}}
         Example: {'ca': {'metadata': 'D:/data/.cache/results-ca-metadata-gpt-5-nano.jsonl', ...}}
     """
+    if preferred_model is None:
+        preferred_model = _DEFAULT_MODEL
+
     cache_path = Path(cache_dir)
     if not cache_path.exists():
         print(f'  ERROR: Cache directory not found: {cache_dir}')
         return {}
 
-    discovered = defaultdict(dict)
-    file_count = 0
+    # First pass: collect ALL matching files grouped by (state, analysis_type).
+    candidates: Dict[str, Dict[str, List[Tuple[Path, str]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
     skipped_files = []
-
-    # Set of known analysis types for filtering
     known_types = set(ANALYSIS_TYPES)
 
     for f in sorted(cache_path.iterdir()):
@@ -412,34 +436,71 @@ def discover_cache_files(
 
         state, analysis_type, model = match.groups()
 
-        # Filter by requested states
+        # Filter by requested states.
         if states and state not in states:
             continue
 
-        # Filter by known analysis types — skip stray/legacy caches
+        # Filter by known analysis types — skip stray/legacy caches.
         if analysis_type not in known_types:
             skipped_files.append(f.name)
             continue
 
-        # If multiple models exist for same state+analysis, prefer latest
-        if analysis_type in discovered[state]:
-            existing = Path(discovered[state][analysis_type])
-            if f.stat().st_mtime > existing.stat().st_mtime:
-                discovered[state][analysis_type] = str(f)
-        else:
-            discovered[state][analysis_type] = str(f)
+        candidates[state][analysis_type].append((f, model))
+
+    # Second pass: select the best file for each (state, analysis_type).
+    discovered: Dict[str, Dict[str, str]] = {}
+    file_count = 0
+
+    for state in sorted(candidates):
+        discovered[state] = {}
+        for analysis_type in sorted(candidates[state]):
+            file_list = candidates[state][analysis_type]
+
+            if len(file_list) == 1:
+                chosen, chosen_model = file_list[0]
+            else:
+                # Multiple files: prefer the one matching preferred_model.
+                preferred_matches = [
+                    (f, m) for f, m in file_list if m == preferred_model
+                ]
+                if preferred_matches:
+                    chosen, chosen_model = max(
+                        preferred_matches, key=lambda x: x[0].stat().st_size,
+                    )
+                else:
+                    # No preferred model match — pick the largest file.
+                    chosen, chosen_model = max(
+                        file_list, key=lambda x: x[0].stat().st_size,
+                    )
+
+                # Log the selection when alternatives existed.
+                alt_models = [m for _, m in file_list if m != chosen_model]
+                if alt_models:
+                    print(f'    {state.upper()}/{analysis_type}: '
+                          f'selected {chosen_model} '
+                          f'(skipped: {", ".join(alt_models)})')
+
+            discovered[state][analysis_type] = str(chosen)
             file_count += 1
 
-    print(f'  Discovered {file_count} cache files across {len(discovered)} states')
+    print(f'  Discovered {file_count} cache files across {len(discovered)} states '
+          f'(preferred model: {preferred_model})')
     for state in sorted(discovered):
         analyses = sorted(discovered[state].keys())
-        print(f'    {state.upper()}: {", ".join(analyses)}')
+        # Show the actual model selected for each file.
+        details = []
+        for a in analyses:
+            fname = Path(discovered[state][a]).name
+            m = CACHE_FILE_PATTERN.match(fname)
+            model_used = m.group(2) if m else '?'
+            details.append(a)
+        print(f'    {state.upper()}: {", ".join(details)}')
     if skipped_files:
         print(f'  Skipped {len(skipped_files)} non-analysis cache file(s):')
         for name in skipped_files:
             print(f'    {name}')
 
-    return dict(discovered)
+    return discovered
 
 
 # =============================================================================
@@ -1225,6 +1286,7 @@ def main(
         cache_dir: Optional[str] = None,
         output_dir: Optional[str] = None,
         states: Optional[List[str]] = None,
+        model: Optional[str] = None,
     ) -> Tuple[pd.DataFrame, Dict]:
     """Main execution function for aggregating cannabis results.
 
@@ -1232,6 +1294,8 @@ def main(
         cache_dir: Path to the cache directory with parsed JSONL files.
         output_dir: Path for build-stage output files.
         states: Optional list of state codes to process.
+        model: Preferred AI model name for cache selection
+            (e.g., 'gpt-5-nano'). If None, uses default.
 
     Returns:
         Tuple of (aggregated DataFrame, statistics dict).
@@ -1240,6 +1304,8 @@ def main(
         cache_dir = DEFAULT_CACHE_DIR
     if output_dir is None:
         output_dir = DEFAULT_BUILD_DIR
+    if model is None:
+        model = _DEFAULT_MODEL
 
     print('=' * 70)
     print(f'Cannlytics Cannabis Results Aggregator v{VERSION}')
@@ -1247,6 +1313,7 @@ def main(
     print(f'Timestamp: {get_timestamp()}')
     print(f'Cache directory: {cache_dir}')
     print(f'Output directory: {output_dir}')
+    print(f'Preferred model: {model}')
     if states:
         print(f'States filter: {", ".join(s.upper() for s in states)}')
     print('')
@@ -1256,7 +1323,9 @@ def main(
 
     # Step 1: Discover cache files
     print('Step 1: Discovering cache files...')
-    cache_files = discover_cache_files(cache_dir, states=states)
+    cache_files = discover_cache_files(
+        cache_dir, states=states, preferred_model=model,
+    )
 
     if not cache_files:
         print('\nERROR: No cache files found. Check cache directory path.')
@@ -1333,7 +1402,7 @@ if __name__ == '__main__':
     if is_jupyter():
         print('Running in Jupyter notebook mode...')
         print('To customize, call main() directly with parameters:')
-        print('  main(cache_dir="...", output_dir="...", states=["ca", "fl"])')
+        print('  main(cache_dir="...", output_dir="...", states=["ca", "fl"], model="gpt-5-nano")')
         print('')
 
         df, stats = main()
@@ -1347,6 +1416,8 @@ Examples:
   python agg_results.py --cache-dir "D:\\data\\.cache"
   python agg_results.py --output-dir "D:\\data\\build"
   python agg_results.py --states ca fl ny
+  python agg_results.py --model gpt-5-nano
+  python agg_results.py --model gpt-5-mini --states ca
   python agg_results.py --states ca --cache-dir "D:\\data\\.cache" --output-dir "D:\\output"
             """,
         )
@@ -1369,6 +1440,12 @@ Examples:
             default=None,
             help='State codes to process (e.g., ca fl ny). Default: all discovered.',
         )
+        parser.add_argument(
+            '--model',
+            type=str,
+            default=None,
+            help=f'Preferred AI model for cache selection (default: {_DEFAULT_MODEL})',
+        )
 
         args = parser.parse_args()
 
@@ -1379,4 +1456,5 @@ Examples:
             cache_dir=args.cache_dir,
             output_dir=args.output_dir,
             states=state_list,
+            model=args.model,
         )

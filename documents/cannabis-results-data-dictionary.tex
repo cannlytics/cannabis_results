@@ -1,0 +1,409 @@
+\documentclass[11pt,letterpaper]{article}
+
+% ============================================================================
+% Packages
+% ============================================================================
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{colortbl}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{enumitem}
+\usepackage{graphicx}
+\usepackage{titlesec}
+\usepackage{parskip}
+\usepackage{setspace}
+\usepackage{multirow}
+\usepackage{lastpage}
+\usepackage{needspace}
+\usepackage{amsmath}
+
+% ============================================================================
+% Page Layout
+% ============================================================================
+\geometry{
+    letterpaper,
+    left=0.75in,
+    right=0.75in,
+    top=0.85in,
+    bottom=0.85in,
+}
+
+\setlength{\parskip}{0.5em}
+\setstretch{1.05}
+
+% ============================================================================
+% Colors
+% ============================================================================
+\definecolor{cannlyticsprimary}{RGB}{12, 75, 51}
+\definecolor{cannlyticssecondary}{RGB}{45, 45, 45}
+\definecolor{lightgray}{RGB}{248, 248, 248}
+\definecolor{tableborder}{RGB}{200, 200, 200}
+
+% ============================================================================
+% Header / Footer
+% ============================================================================
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\textcolor{cannlyticssecondary}{\small Cannabis Results Data Dictionary}}
+\fancyhead[R]{\textcolor{cannlyticssecondary}{\small March 4, 2026}}
+\fancyfoot[C]{\textcolor{cannlyticssecondary}{\small Page \thepage\ of \pageref{LastPage}}}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% ============================================================================
+% Section Formatting
+% ============================================================================
+\titleformat{\section}
+    {\Large\bfseries\color{cannlyticsprimary}}
+    {\thesection}{0.8em}{}
+\titleformat{\subsection}
+    {\normalsize\bfseries\color{cannlyticssecondary}}
+    {\thesubsection}{0.6em}{}
+
+\titlespacing*{\section}{0pt}{2.5ex plus 1ex minus 0.3ex}{1.5ex plus 0.3ex}
+\titlespacing*{\subsection}{0pt}{1.8ex plus 0.6ex minus 0.2ex}{0.8ex plus 0.2ex}
+
+% ============================================================================
+% Hyperref Setup
+% ============================================================================
+\hypersetup{
+    colorlinks=true,
+    linkcolor=cannlyticsprimary,
+    urlcolor=cannlyticsprimary,
+    citecolor=cannlyticsprimary,
+    pdftitle={Data Dictionary | Cannabis Results},
+    pdfauthor={Cannlytics},
+}
+
+% ============================================================================
+% Custom Commands
+% ============================================================================
+\newcommand{\fieldname}[1]{\texttt{\textbf{#1}}}
+
+% Custom column types
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash\ttfamily\small}p{#1}}
+\newcolumntype{C}[1]{>{\centering\arraybackslash\small}p{#1}}
+
+% ============================================================================
+% Document
+% ============================================================================
+\begin{document}
+
+% ----------------------------------------------------------------------------
+% Title Page
+% ----------------------------------------------------------------------------
+\begin{titlepage}
+    \centering
+    \vspace*{1.5cm}
+
+    {\Huge\bfseries\textcolor{cannlyticsprimary}{Cannabis Results\\[0.5\baselineskip]Data Dictionary}}
+
+    \rule{0.5\textwidth}{1pt}
+
+    \vspace{0.5cm}
+
+    {\large
+    \begin{tabular}{rl}
+    \textbf{Prepared by:} & Cannlytics \\[0.25cm]
+    \textbf{Date:} & March 4, 2026 \\[0.25cm]
+    \textbf{Coverage:} & United States \\[0.25cm]
+    \textbf{States:} & 4 \\[0.25cm]
+    \textbf{Total Records:} & 2,417 \\[0.25cm]
+    \textbf{Analyte Measurements:} & 191,531 \\[0.25cm]
+    \textbf{Update Frequency:} & Weekly \\[0.25cm]
+    \textbf{Format:} & CSV \\
+    \end{tabular}
+    }
+
+    \vfill
+
+    \vspace{0.8cm}
+
+    {\small\textcolor{cannlyticssecondary}{
+    \textbf{Contact:} contact@cannlytics.com\\[0.25cm]
+    \textbf{Website:} \url{https://cannlytics.com}\\[0.25cm]
+    \textcopyright\ 2026 Cannlytics. All rights reserved.
+    }}
+
+\end{titlepage}
+
+% ============================================================================
+\section*{Overview}
+% ============================================================================
+
+The \textbf{Cannlytics Cannabis Results} dataset is a comprehensive
+collection of cannabis laboratory test results (Certificates of
+Analysis) aggregated from publicly available sources across the
+United States. Each record represents a single COA and contains
+product metadata, producer and laboratory information, cannabinoid
+and terpene totals, contaminant screening statuses, and detailed
+per-analyte measurements. For data questions, technical support,
+or licensing inquiries please email: contact@cannlytics.com
+
+\vspace{1em}
+
+{\small
+\renewcommand{\arraystretch}{1.4}
+\begin{tabularx}{\textwidth}{@{}Xr@{}}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Total Records & 2,417 \\
+U.S. States Covered & 4 \\
+Unique Testing Laboratories & 182 \\
+Unique Producers & 494 \\
+Data Sources & 1 \\
+Total Analyte Measurements & 191,531 \\
+Avg.\ Analytes per Record & 79.2 \\
+Total AI Parsing Cost & \$7.22 \\
+\bottomrule
+\end{tabularx}
+}
+
+\vspace{0.5em}
+
+\noindent\textbf{Data completeness tiers:} high: 2,325, medium: 82, low: 7, incomplete: 3
+
+% ============================================================================
+\section{State Coverage}
+% ============================================================================
+
+The dataset currently spans \textbf{4} U.S.
+states. Coverage varies by state depending on the availability of
+public COA data, active data collection sources, and regulatory
+transparency.
+
+\vspace{1em}
+
+{\small
+\renewcommand{\arraystretch}{1.2}
+\begin{tabularx}{\textwidth}{@{}Xlr|Xlr@{}}
+\toprule
+\textbf{State} & \textbf{Records} & \textbf{\%} & \textbf{State} & \textbf{Records} & \textbf{\%} \\
+\midrule
+Florida (FL) & 773 & 32.0\% & Arizona (AZ) & 471 & 19.5\% \\
+California (CA) & 756 & 31.3\% & New York (NY) & 417 & 17.3\% \\
+\bottomrule
+\end{tabularx}
+}
+
+% ============================================================================
+\section{Product Type Distribution}
+% ============================================================================
+
+Product types are standardized to eight canonical categories during
+quality control. The distribution reflects the mix of products tested
+across all states.
+
+\vspace{1em}
+
+{\small
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{@{}Xrrr@{}}
+\toprule
+\textbf{Product Type} & \textbf{Records} & \textbf{Proportion} & \textbf{Cumulative} \\
+\midrule
+\texttt{flower} & 927 & 38.4\% & 38.4\% \\
+\texttt{concentrate} & 660 & 27.3\% & 65.7\% \\
+\texttt{preroll} & 321 & 13.3\% & 79.0\% \\
+\texttt{vape} & 281 & 11.6\% & 90.6\% \\
+\texttt{edible} & 205 & 8.5\% & 99.1\% \\
+\texttt{topical} & 8 & 0.3\% & 99.4\% \\
+\texttt{tincture} & 4 & 0.2\% & 99.6\% \\
+\bottomrule
+\end{tabularx}
+}
+
+% ============================================================================
+\section{Analysis Coverage}
+% ============================================================================
+
+Each COA may include one or more analysis types. Cannabinoid and
+terpene analyses are nearly universal, while safety screening
+analyses (pesticides, heavy metals, microbials, residual solvents)
+depend on state regulations and the level of detail extractable
+from the source COA.
+
+\vspace{1em}
+
+{\small
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\textwidth}{@{}Xrr@{}}
+\toprule
+\textbf{Analysis Type} & \textbf{Records} & \textbf{Coverage} \\
+\midrule
+\texttt{cannabinoids} & 2,397 & 99.2\% \\
+\texttt{terpenes} & 2,362 & 97.7\% \\
+\texttt{microbials} & 450 & 18.6\% \\
+\texttt{pesticides} & 430 & 17.8\% \\
+\texttt{heavy\_metals} & 423 & 17.5\% \\
+\texttt{residual\_solvents} & 336 & 13.9\% \\
+\texttt{moisture\_foreign\_matter} & 332 & 13.7\% \\
+\texttt{other} & 192 & 7.9\% \\
+\texttt{safety} & 51 & 2.1\% \\
+\bottomrule
+\end{tabularx}
+}
+
+% ============================================================================
+\section{Field Definitions}
+% ============================================================================
+
+\textbf{Table~1} defines every field in the dataset.
+The \textbf{Coverage} column indicates the percentage of records
+where the field has a non-empty value.
+
+\vspace{0.5em}
+
+\noindent\textit{Table 1: Record-level field definitions}
+
+\vspace{0.5em}
+
+\small
+\renewcommand{\arraystretch}{1.5}
+\begin{longtable}{@{}L{4.2cm}C{1.1cm}C{1.6cm}p{9.5cm}@{}}
+\toprule
+\textbf{Field} & \textbf{Type} & \textbf{Coverage} & \textbf{Description} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Field} & \textbf{Type} & \textbf{Coverage} & \textbf{Description} \\
+\midrule
+\endhead
+\midrule
+\multicolumn{4}{r}{\small\textit{Continued on next page}} \\
+\endfoot
+\bottomrule
+\endlastfoot
+\fieldname{pdf\_hash} & string & 100.0\% & SHA-256 hash of the source COA PDF file. Serves as the primary deduplication key across all states. \\[0.4em]
+\fieldname{sample\_id} & string & 96.3\% & A lab-assigned identifier for the sample (e.g., \texttt{220415-001}). \\[0.4em]
+\fieldname{state} & string & 100.0\% & Two-letter U.S. state code where the product was tested (lowercase, e.g., \texttt{ca}). \\[0.4em]
+\fieldname{source} & string & 100.0\% & Name of the data source or collector that produced the COA (e.g., \texttt{flower\_company}, \texttt{kaycha}). \\[0.4em]
+\fieldname{product\_name} & string & 96.0\% & The commercial name of the product as printed on the COA. \\[0.4em]
+\fieldname{strain\_name} & string & 81.0\% & A strain or cultivar name, if specified. May be parsed from \texttt{product\_name} when not explicitly stated. \\[0.4em]
+\fieldname{product\_type} & string & 99.5\% & Standardized product category. One of: \texttt{flower}, \texttt{preroll}, \texttt{infused}, \texttt{concentrate}, \texttt{vape}, \texttt{edible}, \texttt{tincture}, \texttt{topical}. \\[0.4em]
+\fieldname{batch\_number} & string & 95.7\% & The manufacturer batch or lot number for the sampled product. \\[0.4em]
+\fieldname{batch\_size} & float & 92.8\% & The total batch size in grams, if reported on the COA. \\[0.4em]
+\fieldname{sample\_weight} & float & 97.4\% & The weight of the laboratory sample in grams. \\[0.4em]
+\fieldname{producer} & string & 91.1\% & The name of the licensed producer (cultivator or manufacturer). \\[0.4em]
+\fieldname{producer\_street} & string & 65.9\% & Street address of the producer facility. \\[0.4em]
+\fieldname{producer\_city} & string & 75.9\% & City of the producer facility. \\[0.4em]
+\fieldname{producer\_state} & string & 75.9\% & State of the producer facility (two-letter code). \\[0.4em]
+\fieldname{producer\_zipcode} & string & 69.9\% & ZIP code of the producer facility. \\[0.4em]
+\fieldname{producer\_license\_number} & string & 60.7\% & The state-issued license number for the producer. \\[0.4em]
+\fieldname{distributor} & string & 33.4\% & The name of the product distributor, if applicable. \\[0.4em]
+\fieldname{distributor\_license\_number} & string & 30.7\% & The state-issued license number for the distributor, if applicable. \\[0.4em]
+\fieldname{lab} & string & 98.0\% & The name of the testing laboratory that performed the analyses. \\[0.4em]
+\fieldname{lab\_license\_number} & string & 82.3\% & The state-issued license number for the testing laboratory. \\[0.4em]
+\fieldname{lab\_address} & string & 94.6\% & Full street address of the testing laboratory. \\[0.4em]
+\fieldname{lab\_city} & string & 94.7\% & City of the testing laboratory. \\[0.4em]
+\fieldname{lab\_state} & string & 94.7\% & State of the testing laboratory (two-letter code). \\[0.4em]
+\fieldname{lab\_zipcode} & string & 91.2\% & ZIP code of the testing laboratory. \\[0.4em]
+\fieldname{date\_tested} & date & 93.0\% & ISO-formatted date when laboratory analysis was completed (\texttt{YYYY-MM-DD}). \\[0.4em]
+\fieldname{date\_received} & date & 88.6\% & ISO-formatted date when the sample was received by the lab. \\[0.4em]
+\fieldname{date\_collected} & date & 76.9\% & ISO-formatted date when the sample was collected from the production facility. \\[0.4em]
+\fieldname{total\_thc} & float & 95.0\% & Analytical total of THC and THCA, in weight percent (\%). Calculated as $\Delta$9-THC + (THCA $\times$ 0.877). \\[0.4em]
+\fieldname{total\_cbd} & float & 63.5\% & Analytical total of CBD and CBDA, in weight percent (\%). Calculated as CBD + (CBDA $\times$ 0.877). \\[0.4em]
+\fieldname{total\_cannabinoids} & float & 95.0\% & Sum of all cannabinoids detected, in weight percent (\%). \\[0.4em]
+\fieldname{total\_terpenes} & float & 70.3\% & Sum of all terpenes detected, in weight percent (\%). \\[0.4em]
+\fieldname{status} & string & 99.4\% & Overall pass/fail status for all contaminant screening analyses. Values: \texttt{pass}, \texttt{fail}, \texttt{nt} (not tested). \\[0.4em]
+\fieldname{pesticides\_status} & string & 54.0\% & Pass/fail status for the pesticide residue analysis. \\[0.4em]
+\fieldname{heavy\_metals\_status} & string & 72.1\% & Pass/fail status for the heavy metals analysis. \\[0.4em]
+\fieldname{microbials\_status} & string & 79.0\% & Pass/fail status for the microbial contaminant analysis. \\[0.4em]
+\fieldname{residual\_solvents\_status} & string & 32.1\% & Pass/fail status for the residual solvents analysis. \\[0.4em]
+\fieldname{moisture\_content} & float & 30.5\% & Moisture content of the sample in weight percent (\%). \\[0.4em]
+\fieldname{water\_activity} & float & 29.7\% & Water activity ($a_W$) of the sample (dimensionless, 0.0--1.0). \\[0.4em]
+\fieldname{analyses} & list & 100.0\% & JSON list of analysis types performed on the sample (e.g., \texttt{["cannabinoids", "terpenes", "pesticides"]}). \\[0.4em]
+\fieldname{results} & list & 100.0\% & JSON list of individual analyte measurements. See \textbf{Table~2} for the result detail schema. \\[0.4em]
+\fieldname{parsing\_model} & string & 100.0\% & The AI model used to parse the COA (e.g., \texttt{gpt-4o-mini}, \texttt{gpt-4.1-nano}). \\[0.4em]
+\fieldname{parsing\_cost} & float & 100.0\% & Estimated API cost in USD incurred to parse this COA. \\[0.4em]
+\fieldname{date\_aggregated} & date & 100.0\% & ISO-formatted date when the record was aggregated into the build file by \texttt{agg\_results.py}. \\[0.4em]
+\fieldname{completeness} & string & 99.9\% & Data completeness tier assigned by \texttt{qc\_results.py}. Values: \texttt{high}, \texttt{medium}, \texttt{low}, or empty. \\
+\end{longtable}
+
+% ============================================================================
+\section{Result Detail Schema}
+% ============================================================================
+
+The \texttt{results} field contains a JSON list of individual analyte
+measurements. Each element is a dictionary conforming to the schema
+described in \textbf{Table~2}.
+
+\vspace{0.5em}
+
+\noindent\textit{Table 2: Analyte result detail fields (elements of the
+\texttt{results} JSON list)}
+
+\vspace{0.5em}
+
+\small
+\renewcommand{\arraystretch}{1.5}
+\begin{longtable}{@{}L{2.5cm}C{1.1cm}p{13.0cm}@{}}
+\toprule
+\textbf{Field} & \textbf{Type} & \textbf{Description} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Field} & \textbf{Type} & \textbf{Description} \\
+\midrule
+\endhead
+\bottomrule
+\endlastfoot
+\fieldname{analysis} & string & The analysis type that produced this measurement (e.g., \texttt{cannabinoids}, \texttt{pesticides}). \\[0.4em]
+\fieldname{key} & string & A standardized snake\_case key for the analyte (e.g., \texttt{delta\_9\_thc}, \texttt{beta\_myrcene}). \\[0.4em]
+\fieldname{name} & string & The laboratory's displayed name for the analyte (e.g., ``$\Delta$9-THC'', ``Pyrethrins''). \\[0.4em]
+\fieldname{value} & float & The measured test result value. For cannabinoids and terpenes, reported in weight percent (\%); for pesticides and heavy metals, in the units specified. \\[0.4em]
+\fieldname{units} & string & The units for \texttt{value}, \texttt{limit}, \texttt{lod}, and \texttt{loq} (e.g., \texttt{percent}, \texttt{ppb}, \texttt{cfu/g}). \\[0.4em]
+\fieldname{limit} & float & The regulatory action limit for contaminant screening analyses. 0.0 if not applicable or not reported. \\[0.4em]
+\fieldname{lod} & float & Limit of Detection. Values below the LOD are typically reported as ``ND'' (Not Detected). 0.0 if not reported. \\[0.4em]
+\fieldname{loq} & float & Limit of Quantification. Values above the LOD but below the LOQ are typically reported as ``$<$LOQ''. 0.0 if not reported. \\[0.4em]
+\fieldname{status} & string & Pass/fail status for contaminant screening analytes. Values: \texttt{pass}, \texttt{fail}, or empty. \\
+\end{longtable}
+
+% ============================================================================
+\section{Data Methodology}
+% ============================================================================
+
+\begin{enumerate}[leftmargin=1.5em, itemsep=0.4em]
+
+\item \textbf{Collection:} COA documents (PDFs) are collected from
+publicly available sources including dispensary websites, laboratory
+portals, brand transparency pages, and public records requests.
+Jurisdiction-specific collection algorithms handle the unique data
+access patterns of each source.
+
+\item \textbf{Aggregation:} The \texttt{agg\_results.py} pipeline
+reads AI-parsed cache files (JSONL format organized by state and
+analysis type), merges metadata with analyte-level results, deduplicates
+by SHA-256 PDF hash, validates ranges, and exports the build CSV.
+
+\item \textbf{Quality Control:} The \texttt{qc\_results.py} pipeline
+applies 18 validation rules: string normalization, name cleaning,
+date standardization, product type and status normalization, numeric
+range validation with automatic mg/g-to-percent correction, state
+validation, deduplication, JSON integrity checks, cross-field
+consistency validation, lab name standardization, and data
+completeness scoring.
+
+\item \textbf{Parsing:} COA documents are parsed using AI vision
+models (primarily \texttt{gpt-5-nano}) with structured output.
+The parsing pipeline implements single-page fast-path processing,
+metadata extraction with smart retry logic, and OCR fallback detection.
+Parsing accuracy targets exceed 99\% on potency analyses.
+
+\item \textbf{Standardization:} All analyte keys are normalized to
+a canonical snake\_case vocabulary. Product types are collapsed to
+eight standard categories. Contaminant statuses are normalized to
+\texttt{pass}, \texttt{fail}, \texttt{nt} (not tested), or
+\texttt{n/a}.
+
+\end{enumerate}
+
+\end{document}

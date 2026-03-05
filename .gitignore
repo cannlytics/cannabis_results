@@ -17,6 +17,9 @@ secrets/
 data/
 package/
 raw/
+.build/
+.output/
+.logs/
 
 # === Test and Temporary Data ===
 *.datasets
@@ -70,6 +73,9 @@ cache/
 # === Logs ===
 *.log
 logs/
+
+# === Documentation ===
+!documents/build/
 
 # === GitHub-Specific Exclusions ===
 # Data files tracked by HuggingFace LFS, not GitHub

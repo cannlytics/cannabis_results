@@ -196,7 +196,7 @@ AI_PROVIDERS = {
                 'image_cost': 0.003825,
             },
         },
-        'default_model': 'gpt-5-mini',
+        'default_model': 'gpt-5-nano',
         'env_key': 'OPENAI_API_KEY',
         'priority': 2,
         'free_tier': False,

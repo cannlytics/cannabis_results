@@ -1,12 +1,12 @@
 # Cannlytics Cannabis Results — Pipeline Reference
 
-> **One-line summary:** Collect → Parse → Aggregate → QC → Compile → Validate → Package
+> **One-line summary:** Collect → Parse → Aggregate → QC → Merge Licenses → Compile → Validate → Package
 
 This document is the **canonical source** for pipeline execution order. When in doubt, follow this.
 
 ## Pipeline Overview
 
-The Cannlytics Cannabis Results pipeline collects cannabis Certificates of Analysis (COAs) from publicly available sources across the United States, parses them with AI vision models to extract structured lab test data, aggregates per-state caches into a unified dataset, applies comprehensive quality control, compiles a standardized 44-column dataset with a professional data dictionary, and packages everything into a delivery-ready archive with full provenance tracking.
+The Cannlytics Cannabis Results pipeline collects cannabis Certificates of Analysis (COAs) from publicly available sources across the United States, parses them with AI vision models to extract structured lab test data, aggregates per-state caches into a unified dataset, applies comprehensive quality control, links license numbers to the `cannabis_licenses` dataset for entity canonicalization and foreign-key provenance, compiles a standardized 44-column dataset with a professional data dictionary, and packages everything into a delivery-ready archive with full provenance tracking.
 
 ## Prerequisites
 
@@ -36,7 +36,8 @@ cannabis_results/
 │   ├── scan_qrcodes.py   QR code scanner for COA provenance
 │   ├── agg_results.py    Data aggregation
 │   ├── qc_results.py     Quality control
-│   ├── create_results_dictionary.py   Data dictionary generation
+│   ├── merge_licenses.py License linkage & entity canonicalization
+│   ├── create_results_dictionary.py   Data dictionary
 │   ├── create_results_dataset.py      Dataset compilation
 │   ├── test_results.py   Validation
 │   └── package_results.py Packaging
@@ -52,21 +53,22 @@ cannabis_results/
 ## Pipeline Stages
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Stage 1       Stage 2       Stage 2.5                         │
-│  Collection →  Parsing ────→ QR Scanning (optional, parallel)  │
-│  (26+ scripts) parse_coas    scan_qrcodes                      │
-│                     │                                          │
-│                     ▼                                          │
-│               Stage 3       Stage 4       Stage 5    Stage 6   │
-│               agg_results → qc_results → create_  → test_     │
-│               (aggregate)   (validate)   dataset    results    │
-│                                          (compile)  (verify)   │
-│                                               │                │
-│                                               ▼                │
-│                                          Stage 7               │
-│                                          package_results       │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│  Stage 1       Stage 2       Stage 2.5                              │
+│  Collection →  Parsing ────→ QR Scanning (optional, parallel)       │
+│  (26+ scripts) parse_coas    scan_qrcodes                          │
+│                     │                                               │
+│                     ▼                                               │
+│               Stage 3       Stage 4       Stage 4.5     Stage 5    │
+│               agg_results → qc_results → merge_      → create_    │
+│               (aggregate)   (validate)   licenses      dataset     │
+│                                          (link keys)   (compile)   │
+│                                                             │      │
+│                              Stage 6                        ▼      │
+│                              test_results ←──────── Stage 7        │
+│                              (verify)               package_       │
+│                                                     results        │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Stage 1: Collection
@@ -134,6 +136,31 @@ python qc_results.py --report build/qc-report.json   # Save report
 **Input/Output:** `.build/cannabis-results.csv` (in-place)
 Runs 18 validation rules: string cleanup, product/strain name cleaning, product type and status normalization, date validation, numeric range correction (auto-converts mg/g → %), lab/producer name standardization, state validation, zip code cleaning, deduplication, analysis name normalization (140+ variants → 9 canonical types), JSON integrity, cross-field consistency, completeness scoring. Idempotent.
 
+### Stage 4.5: License Merge
+
+```bash
+python scripts/merge_licenses.py
+python scripts/merge_licenses.py --licenses "path/to/licenses.csv"
+python scripts/merge_licenses.py --dry-run           # Compute matches, don't modify
+python scripts/merge_licenses.py --report merge-report.json
+python scripts/merge_licenses.py --quiet
+```
+
+**Input:** `.build/cannabis-results.csv` (post-QC), `cannabis-licenses-latest.csv` (external dataset)
+**Output:** `.build/cannabis-results.csv` (enriched, in-place), `.build/merge-licenses-report.json`
+
+Establishes M:1 foreign-key linkage between the results dataset and the `cannabis_licenses` dataset. Three-strategy matching engine:
+
+1. **Exact match** — Normalized license number lookup against 38K+ indexed license records. Normalization handles prefix stripping (`LIC#`, `LICENSE #`, `DEA NO`, `FL LICENSE #`), compound value splitting (`RA0571996 / CMTL-0003` → first value), universal `-LIC` suffix removal, state-specific repairs (NY smashed prefixes like `OCMPROC` → `OCM-PROC`, FL state prefix removal, CA space-to-hyphen), location suffix stripping (`APOPKA`), and non-license value rejection (CLIA accreditation IDs, FL health dept permits, placeholder values).
+
+2. **Relaxed match** — Generates format variants: leading zero adjustments, hyphen insertion/removal, internal zero-run collapsing (`CDPH-100003818` → `CDPH-10003818`), CA OCR typo correction (`CB-` → `C8-`, `BCC-` → `DCC-`, `CI11-` → `C11-`), FL transposition (`CMLT-` → `CMTL-`).
+
+3. **Name-based fallback** — When license number doesn't match but entity name does within the same state and license category. Low-confidence but catches legitimate misses.
+
+Adds columns: `producer_license_match`, `distributor_license_match`, `lab_license_match` (match quality provenance: `exact`, `relaxed`, `name_fallback`, `unmatched`), `license_role_flags` (misassignment warnings). Canonicalizes entity names (producer, distributor, lab) using the license dataset as ground truth (DBA → brand → legal name priority).
+
+**Dependencies:** Requires `cannabis-licenses-latest.csv` from the `cannabis_licenses` repository. Default path: `~/OneDrive/Cannlytics/huggingface/datasets/cannabis_licenses/output/cannlytics-cannabis-licenses-latest.csv`. Override with `--licenses` flag or `CANNLYTICS_LICENSES_PATH` env var.
+
 ### Stage 5: Dataset Compilation
 
 ```bash
@@ -189,6 +216,7 @@ python scripts/scan_qrcodes.py --state ca
 # Stages 3-7: Build pipeline
 python scripts/agg_results.py
 python scripts/qc_results.py
+python scripts/merge_licenses.py
 python scripts/create_results_dataset.py
 python scripts/test_results.py
 python scripts/package_results.py
@@ -201,7 +229,9 @@ When you only need to regenerate output from existing caches:
 ```bash
 python scripts/agg_results.py
 python scripts/qc_results.py
+python scripts/merge_licenses.py
 python scripts/create_results_dataset.py
 python scripts/test_results.py
 python scripts/package_results.py
+
 ```
