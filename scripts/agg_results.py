@@ -121,6 +121,12 @@ CACHE_FILE_PATTERN = re.compile(
     r'^results-([a-z]{2})-([a-z_]+)-([\w\-.]+)\.jsonl$'
 )
 
+# Algorithm cache file naming pattern:
+#   results-{state}-algorithm.jsonl
+ALGORITHM_CACHE_PATTERN = re.compile(
+    r'^results-([a-z]{2})-algorithm\.jsonl$'
+)
+
 
 # Metadata fields extracted from the metadata cache.
 # These become top-level columns in the output.
@@ -181,7 +187,7 @@ EXPORT_COLUMNS = [
     # Detailed results (JSON list)
     'results',
     # Parsing metadata
-    'parsing_model', 'parsing_cost',
+    'parsing_method', 'parsing_algorithm', 'parsing_model', 'parsing_cost',
     # Aggregation metadata
     'date_aggregated',
 ]
@@ -501,6 +507,160 @@ def discover_cache_files(
             print(f'    {name}')
 
     return discovered
+
+
+def discover_algorithm_caches(
+        cache_dir: str,
+        states: Optional[List[str]] = None,
+    ) -> Dict[str, str]:
+    """Discover algorithm cache files organized by state.
+
+    Algorithm caches follow the pattern: results-{state}-algorithm.jsonl
+    Each contains flat, pre-merged records (no merge step needed).
+
+    Args:
+        cache_dir: Path to the cache directory.
+        states: Optional list of state codes to filter.
+
+    Returns:
+        Dict mapping state -> filepath.
+        Example: {'mo': 'D:/data/.cache/results-mo-algorithm.jsonl'}
+    """
+    cache_path = Path(cache_dir)
+    if not cache_path.exists():
+        return {}
+
+    discovered = {}
+    for f in sorted(cache_path.iterdir()):
+        if not f.is_file():
+            continue
+        match = ALGORITHM_CACHE_PATTERN.match(f.name)
+        if not match:
+            continue
+        state = match.group(1)
+        if states and state not in states:
+            continue
+        discovered[state] = str(f)
+
+    if discovered:
+        print(f'  Discovered {len(discovered)} algorithm cache(s): '
+              f'{", ".join(s.upper() for s in sorted(discovered))}')
+        for state, path in sorted(discovered.items()):
+            # Count records without fully loading.
+            try:
+                with open(path, 'r', encoding='utf-8') as fh:
+                    count = sum(1 for line in fh if line.strip())
+                print(f'    {state.upper()}: {count:,} records')
+            except Exception:
+                print(f'    {state.upper()}: (could not count)')
+
+    return discovered
+
+
+def load_algorithm_records(
+        algo_caches: Dict[str, str],
+    ) -> List[Dict]:
+    """Load algorithm-parsed records from all discovered algorithm caches.
+
+    Algorithm records are already in flat, pre-merged format (metadata +
+    results combined), so they can be loaded directly without the merge
+    step that AI-parsed records require.
+
+    Args:
+        algo_caches: Dict mapping state -> algorithm cache filepath.
+
+    Returns:
+        List of flat record dicts ready for aggregation.
+    """
+    all_records = []
+
+    for state in sorted(algo_caches):
+        path = algo_caches[state]
+        print(f'\n  Loading algorithm records for {state.upper()}...')
+
+        error_hashes: Set[str] = set()
+        records = load_jsonl_cache(path, error_hashes)
+
+        loaded = 0
+        for pdf_hash, record in records.items():
+            # Ensure state is set.
+            record.setdefault('state', state)
+
+            # Ensure parsing_method is tagged.
+            record.setdefault('parsing_method', 'algorithm')
+
+            # Ensure required fields exist with defaults.
+            record.setdefault('parsing_cost', 0.0)
+            record.setdefault('date_aggregated', get_timestamp())
+
+            # Normalize analyses field.
+            analyses_val = record.get('analyses', '[]')
+            if isinstance(analyses_val, str):
+                try:
+                    analyses_list = json.loads(analyses_val)
+                except (json.JSONDecodeError, TypeError):
+                    analyses_list = []
+            elif isinstance(analyses_val, list):
+                analyses_list = analyses_val
+            else:
+                analyses_list = []
+
+            # Normalize analysis names.
+            normalized = []
+            seen = set()
+            for a in analyses_list:
+                if not a:
+                    continue
+                canonical = normalize_analysis_name(str(a))
+                if canonical and canonical not in seen:
+                    normalized.append(canonical)
+                    seen.add(canonical)
+            record['analyses'] = json.dumps(normalized)
+
+            # Ensure results is a JSON string.
+            results_val = record.get('results', '[]')
+            if isinstance(results_val, list):
+                record['results'] = json.dumps(results_val, default=str)
+
+            # Derive contaminant statuses from results if not already set.
+            try:
+                results_list = json.loads(record.get('results', '[]'))
+            except (json.JSONDecodeError, TypeError):
+                results_list = []
+
+            if results_list:
+                for analysis_type in ('pesticides', 'heavy_metals', 'microbials', 'residual_solvents'):
+                    status_key = f'{analysis_type}_status'
+                    if status_key not in record:
+                        type_results = [r for r in results_list
+                                        if isinstance(r, dict)
+                                        and r.get('analysis') == analysis_type]
+                        if type_results:
+                            status = extract_contaminant_status(type_results)
+                            if status:
+                                record[status_key] = status
+
+                if 'moisture_content' not in record or 'water_activity' not in record:
+                    mfm_results = [r for r in results_list
+                                   if isinstance(r, dict)
+                                   and r.get('analysis') == 'moisture_foreign_matter']
+                    if mfm_results:
+                        moisture, water_activity = extract_moisture_water_activity(mfm_results)
+                        if moisture is not None:
+                            record.setdefault('moisture_content', moisture)
+                        if water_activity is not None:
+                            record.setdefault('water_activity', water_activity)
+
+            # Infer source for algorithm records.
+            algo = record.get('parsing_algorithm', 'algorithm')
+            record.setdefault('source', f'algorithm-{algo}')
+
+            all_records.append(record)
+            loaded += 1
+
+        print(f'    Loaded: {loaded:,} algorithm records')
+
+    return all_records
 
 
 # =============================================================================
@@ -1326,17 +1486,63 @@ def main(
     cache_files = discover_cache_files(
         cache_dir, states=states, preferred_model=model,
     )
+    algo_caches = discover_algorithm_caches(cache_dir, states=states)
 
-    if not cache_files:
+    if not cache_files and not algo_caches:
         print('\nERROR: No cache files found. Check cache directory path.')
         return pd.DataFrame(), {}
 
-    # Step 2: Merge caches per state
-    print('\nStep 2: Merging caches per state...')
-    all_records = []
-    for state in sorted(cache_files):
-        records = merge_state_caches(state, cache_files[state])
-        all_records.extend(records)
+    # Step 2: Load and merge records per source
+    print('\nStep 2: Loading and merging records...')
+
+    # 2a: Load algorithm records (already flat, no merge needed).
+    algo_records = []
+    if algo_caches:
+        print('\n  --- Algorithm Records ---')
+        algo_records = load_algorithm_records(algo_caches)
+        print(f'\n  Total algorithm records: {len(algo_records):,}')
+
+    # 2b: Merge AI-parsed caches per state (existing logic).
+    ai_records = []
+    if cache_files:
+        print('\n  --- AI-Parsed Records ---')
+        for state in sorted(cache_files):
+            records = merge_state_caches(state, cache_files[state])
+            # Tag AI records with parsing_method.
+            for r in records:
+                r.setdefault('parsing_method', 'ai')
+            ai_records.extend(records)
+        print(f'\n  Total AI records: {len(ai_records):,}')
+
+    # 2c: Combine algorithm + AI records with deduplication.
+    # Priority: algorithm records are preferred when a pdf_hash exists
+    # in both sources (algorithm = free, deterministic, reproducible).
+    # Records unique to either source are always kept.
+    if algo_records and ai_records:
+        print('\n  --- Combining Sources ---')
+        algo_hashes = {r['pdf_hash'] for r in algo_records if r.get('pdf_hash')}
+        ai_hashes = {r['pdf_hash'] for r in ai_records if r.get('pdf_hash')}
+        overlap = algo_hashes & ai_hashes
+        algo_only = algo_hashes - ai_hashes
+        ai_only = ai_hashes - algo_hashes
+
+        print(f'    Algorithm-only: {len(algo_only):,}')
+        print(f'    AI-only: {len(ai_only):,}')
+        print(f'    Both sources (overlap): {len(overlap):,}')
+        if overlap:
+            print(f'    Priority: algorithm (free, deterministic)')
+
+        # Build combined list: all algorithm records + AI-only records.
+        all_records = list(algo_records)
+        for r in ai_records:
+            if r.get('pdf_hash') not in algo_hashes:
+                all_records.append(r)
+
+        print(f'    Combined total: {len(all_records):,}')
+    elif algo_records:
+        all_records = algo_records
+    else:
+        all_records = ai_records
 
     if not all_records:
         print('\nERROR: No records loaded from any state.')

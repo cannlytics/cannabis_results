@@ -1,34 +1,31 @@
 """
-Parse COAs | AI-Powered Certificate of Analysis Parsing Engine
+Parse COAs | COA Doc — Hybrid Certificate of Analysis Parsing Engine
 Copyright (c) 2024-2026 Cannlytics
 
 Authors:
     Keegan Skeate <https://github.com/keeganskeate>
 Created: 10/7/2024
-Updated: 2/25/2026
+Updated: 3/5/2026
 License: MIT License <https://github.com/cannlytics/cannlytics/blob/main/LICENSE>
 
 Description:
-    Production-grade AI-powered COA parsing engine. This is the command
-    station that:
+    Production-grade hybrid COA parsing engine. Routes each COA to
+    the optimal parsing method:
 
-    1. Discovers COA PDFs that need parsing across all states/sources
-    2. Determines optimal parsing strategy per COA (PDF, image, text)
-    3. Delegates to the best AI provider based on cost/quality/availability
-    4. Extracts metadata and per-analysis results using multi-prompt approach
-    5. Caches all parsed data with model/provider attribution
-    6. Tracks costs, performance, and quality metrics
-    7. Supports parallel execution and incremental resumption
+    1. **Algorithmic parsing** (free, fast, deterministic): For COAs
+       from recognized labs with battle-tested parsing algorithms.
+    2. **AI-powered parsing** (flexible, comprehensive): For
+       unrecognized COAs or when algorithmic parsing fails.
 
-    Parsing Strategy:
-        - Simple COAs (1-2 pages, cannabinoids/terpenes only):
-          Text extraction → single prompt
-        - Standard COAs (2-5 pages, multiple analyses):
-          PDF/image pages → metadata prompt + per-analysis prompts
-        - Complex COAs (5+ pages, comprehensive testing):
-          Targeted page extraction by keyword → per-analysis prompts
+    The hybrid architecture is the core of COA Doc — Cannlytics'
+    premier COA parsing technology.
 
-    AI Provider Priority:
+    Hybrid Routing Flow:
+        COA PDF → SHA-256 hash → cache check → lab identification
+        → if recognized: algorithmic parser → validate → cache
+        → if unrecognized or failed: AI parser → cache
+
+    AI Provider Priority (for AI fallback):
         1. Anthropic Claude (highest quality, production-grade)
         2. OpenAI (reliable, good structured output)
         3. Google Gemini (free tier available)
@@ -39,8 +36,14 @@ Description:
         get_results_{state}.py → parse_coas.py → process_results.py
 
 Usage:
-    # Parse COAs for a specific state
+    # Parse COAs for a specific state (auto = algorithm-first, AI-fallback)
     python parse_coas.py --state ny --max-parses 100
+
+    # Force AI-only parsing
+    python parse_coas.py --state ca --method ai --provider openai
+
+    # Force algorithm-only parsing (no AI fallback, skips unrecognized)
+    python parse_coas.py --state az --method algorithm
 
     # Parse with a specific provider
     python parse_coas.py --state ca --provider anthropic
@@ -58,9 +61,12 @@ Usage:
 import argparse
 import base64
 import gc
+import importlib
+import importlib.util
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -290,6 +296,494 @@ ANALYSIS_SKIP_RULES = {
 # Supported for GPT-5 family models.
 FLEX_COST_MULTIPLIER = 0.5  # 50% discount on standard rates
 FLEX_TIMEOUT = 900.0  # 15 minutes (recommended by OpenAI docs)
+
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║ COA Doc — Lab Registry & Algorithmic Routing                     ║
+# ╚══════════════════════════════════════════════════════════════════╝
+
+# The Lab Registry maps lab identifiers to their fingerprints,
+# algorithmic parser entry points, and operational metadata.
+# This is the routing table for COA Doc's hybrid architecture.
+#
+# Identification priority:
+#   1. URL presence in page 1 text (highest confidence)
+#   2. Lab/LIMS name presence in page 1 text
+#   3. QR code URL domain match (optional, requires qrustie)
+#
+# Each entry:
+#   - name:         Human-readable lab name
+#   - urls:         URL fragments to search for (case-sensitive)
+#   - text_patterns: Text strings to search for (case-insensitive)
+#   - module:       Python module name (for import)
+#   - algorithm:    Entry point function name
+#   - version:      Algorithm version string
+#   - states:       States where this lab operates
+#   - tier:         Validation tier (1=production, 2=beta, 3=alpha, 4=dev)
+#   - lims:         True if this is a LIMS (multi-lab), False if single lab
+#
+# To add a new lab:
+#   1. Add an entry to LAB_REGISTRY
+#   2. Place the algorithm module in algorithms/coa_parsers/{module}.py
+#      OR ensure cannlytics.data.coas.algorithms.{module} is importable
+#   3. Run the benchmarking suite to validate (Phase 4)
+
+LAB_REGISTRY: Dict[str, Dict[str, Any]] = {
+    'confidentcannabis': {
+        'name': 'Confident Cannabis',
+        'urls': ['confidentcannabis.com', 'confidentlims.com'],
+        'text_patterns': ['Confident Cannabis', 'Confident LIMS'],
+        'module': 'confidentcannabis',
+        'algorithm': 'parse_cc_coa',
+        'version': '1.0.0',
+        'states': ['az', 'ca', 'co', 'mo', 'ny', 'or', 'wa'],
+        'tier': 3,  # Revival testing in progress
+        'lims': True,
+    },
+    'tagleaf': {
+        'name': 'TagLeaf LIMS',
+        'urls': ['lims.tagleaf.com', 'tagleaf.com'],
+        'text_patterns': ['TagLeaf', 'lims.tagleaf'],
+        'module': 'tagleaf',
+        'algorithm': 'parse_tagleaf_coa',
+        'version': '1.0.0',
+        'states': ['mo', 'ca', 'or'],
+        'tier': 3,
+        'lims': True,
+    },
+    # 'kaycha': {
+    #     'name': 'Kaycha Labs',
+    #     'urls': ['kaychalabs.com', 'yourcoa.com'],
+    #     'text_patterns': ['Kaycha Labs', 'Kaycha Laboratory'],
+    #     'module': 'kaycha',
+    #     'algorithm': 'parse_kaycha_coa',
+    #     'version': '1.0.0',
+    #     'states': ['fl', 'ny', 'oh', 'nj'],
+    #     'tier': 3,
+    #     'lims': False,
+    # },
+    # 'sclabs': {
+    #     'name': 'SC Labs',
+    #     'urls': ['client.sclabs.com', 'sclabs.com'],
+    #     'text_patterns': ['SC Labs', 'SC Laboratories'],
+    #     'module': 'sclabs',
+    #     'algorithm': 'parse_sc_labs_coa',
+    #     'version': '1.0.0',
+    #     'states': ['ca', 'or', 'co', 'mi'],
+    #     'tier': 3,
+    #     'lims': False,
+    # },
+    # 'terplife': {
+    #     'name': 'TerpLife Labs',
+    #     'urls': ['terplifelabs.com', 'www.terplifelabs.com'],
+    #     'text_patterns': ['TerpLife Labs', 'TerpLife'],
+    #     'module': 'terplife',
+    #     'algorithm': 'parse_terplife_coa',
+    #     'version': '1.0.0',
+    #     'states': ['fl'],
+    #     'tier': 3,
+    #     'lims': False,
+    # },
+
+    # ── Phase 2+ labs (registered but not yet revived) ────────────
+    # Uncomment and set tier to 3+ as algorithms are revived.
+    #
+    # 'anresco': {
+    #     'name': 'Anresco Laboratories',
+    #     'urls': ['anresco.com'],
+    #     'text_patterns': ['Anresco'],
+    #     'module': 'anresco',
+    #     'algorithm': 'parse_anresco_coa',
+    #     'version': '1.0.0',
+    #     'states': ['ca'],
+    #     'tier': 4,
+    #     'lims': False,
+    # },
+    # 'mcrlabs': {
+    #     'name': 'MCR Labs',
+    #     'urls': ['mcrlabs.com', 'reports.mcrlabs.com'],
+    #     'text_patterns': ['MCR Labs'],
+    #     'module': 'mcrlabs',
+    #     'algorithm': 'parse_mcr_labs_coa',
+    #     'version': '1.0.0',
+    #     'states': ['ma'],
+    #     'tier': 4,
+    #     'lims': False,
+    # },
+    # 'greenleaflab': {
+    #     'name': 'Green Leaf Lab',
+    #     'urls': ['greenleaflab.org'],
+    #     'text_patterns': ['Green Leaf Lab'],
+    #     'module': 'greenleaflab',
+    #     'algorithm': 'parse_green_leaf_lab_coa',
+    #     'version': '1.0.0',
+    #     'states': ['or', 'ca'],
+    #     'tier': 4,
+    #     'lims': False,
+    # },
+    # 'sonoma': {
+    #     'name': 'Sonoma Lab Works',
+    #     'urls': ['sonomalabworks.com'],
+    #     'text_patterns': ['Sonoma Lab Works'],
+    #     'module': 'sonoma',
+    #     'algorithm': 'parse_sonoma_coa',
+    #     'version': '1.0.0',
+    #     'states': ['ca'],
+    #     'tier': 4,
+    #     'lims': False,
+    # },
+}
+
+
+def identify_lab(
+        pdf_path: str,
+        lab_registry: Optional[Dict[str, Dict]] = None,
+        deep_search: bool = True,
+        qr_fallback: bool = False,
+        qrustie_path: Optional[str] = None,
+        logger: Optional[logging.Logger] = None,
+    ) -> Optional[str]:
+    """Identify the originating lab/LIMS from a COA PDF.
+
+    This is the routing decision function for COA Doc's hybrid
+    architecture. It determines whether a COA comes from a
+    recognized lab with an algorithmic parser available.
+
+    Strategy (in order of confidence):
+      1. Extract text from page 1 via pdfplumber.
+      2. Search for known lab URLs in text (highest confidence).
+      3. Search for known lab/LIMS names in text.
+      4. Optionally search page 2 text (deep_search).
+      5. Optionally decode QR codes via qrustie (qr_fallback).
+
+    Args:
+        pdf_path:       Path to the COA PDF file.
+        lab_registry:   Lab registry dict. Defaults to LAB_REGISTRY.
+        deep_search:    Whether to also search page 2 text.
+        qr_fallback:    Whether to attempt QR code identification.
+        qrustie_path:   Path to qrustie binary (for QR fallback).
+        logger:         Optional logger for debug messages.
+
+    Returns:
+        Lab registry key (e.g., 'kaycha') if identified, None otherwise.
+    """
+    if lab_registry is None:
+        lab_registry = LAB_REGISTRY
+    _log = logger or logging.getLogger(__name__)
+
+    # ── Step 1: Extract text from page(s) ─────────────────────
+    texts = []
+    try:
+        with pdfplumber.open(_long_path(pdf_path)) as pdf:
+            if not pdf.pages:
+                return None
+            page1_text = pdf.pages[0].extract_text() or ''
+            texts.append(page1_text)
+            if deep_search and len(pdf.pages) > 1:
+                page2_text = pdf.pages[1].extract_text() or ''
+                texts.append(page2_text)
+    except Exception as e:
+        _log.debug(f'identify_lab: Failed to extract text: {e}')
+        return None
+
+    combined_text = '\n'.join(texts)
+    if not combined_text.strip():
+        _log.debug('identify_lab: No extractable text (image-only PDF)')
+        # Image-only PDFs cannot be identified by text.
+        # Fall through to QR fallback if enabled.
+        if not qr_fallback:
+            return None
+
+    # ── Step 2: Search for known lab URLs (highest confidence) ─
+    for lab_key, config in lab_registry.items():
+        for url in config.get('urls', []):
+            if url in combined_text:
+                _log.debug(f'identify_lab: URL match "{url}" -> {lab_key}')
+                return lab_key
+
+    # ── Step 3: Search for known lab/LIMS names ───────────────
+    text_lower = combined_text.lower()
+    for lab_key, config in lab_registry.items():
+        for pattern in config.get('text_patterns', []):
+            if pattern.lower() in text_lower:
+                _log.debug(f'identify_lab: Text match "{pattern}" -> {lab_key}')
+                return lab_key
+
+    # ── Step 4: QR code fallback via qrustie ──────────────────
+    if qr_fallback and qrustie_path:
+        qr_url = _decode_qr_for_lab_id(
+            pdf_path, qrustie_path, lab_registry, _log,
+        )
+        if qr_url:
+            return qr_url
+
+    return None
+
+
+def _decode_qr_for_lab_id(
+        pdf_path: str,
+        qrustie_path: str,
+        lab_registry: Dict,
+        logger: logging.Logger,
+    ) -> Optional[str]:
+    """Attempt to identify lab from QR code URL via qrustie.
+
+    Renders page 1 as an image, decodes any QR codes, and
+    checks decoded URLs against known lab URL patterns.
+
+    Args:
+        pdf_path:       Path to the COA PDF.
+        qrustie_path:   Path to the qrustie binary.
+        lab_registry:   Lab registry dict.
+        logger:         Logger instance.
+
+    Returns:
+        Lab registry key if identified, None otherwise.
+    """
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            images = get_pdf_pages_as_images(
+                pdf_path, page_indexes=[0], output_dir=tmpdir,
+            )
+            if not images:
+                return None
+            result = subprocess.run(
+                [qrustie_path, '--input', images[0], '--first-only'],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                return None
+            qr_data = json.loads(result.stdout.strip())
+            if not qr_data.get('found') or not qr_data.get('data'):
+                return None
+            qr_url = qr_data['data'][0]
+            # Check decoded URL against known lab URLs.
+            for lab_key, config in lab_registry.items():
+                for url_fragment in config.get('urls', []):
+                    if url_fragment in qr_url:
+                        logger.debug(
+                            f'identify_lab: QR URL match '
+                            f'"{url_fragment}" -> {lab_key}'
+                        )
+                        return lab_key
+    except Exception as e:
+        logger.debug(f'identify_lab: QR fallback failed: {e}')
+    return None
+
+
+def load_algorithm(
+        lab_key: str,
+        lab_registry: Optional[Dict] = None,
+        local_paths: Optional[List[str]] = None,
+        logger: Optional[logging.Logger] = None,
+    ) -> Optional[Callable]:
+    """Load a COA parsing algorithm with local override.
+
+    Import priority:
+      1. Local override directories (for development)
+      2. cannlytics package (canonical source)
+
+    Args:
+        lab_key:        Registry key (e.g., 'kaycha').
+        lab_registry:   Lab registry dict. Defaults to LAB_REGISTRY.
+        local_paths:    List of local directories to search.
+        logger:         Optional logger.
+
+    Returns:
+        The parsing function, or None if not loadable.
+    """
+    if lab_registry is None:
+        lab_registry = LAB_REGISTRY
+    _log = logger or logging.getLogger(__name__)
+
+    config = lab_registry.get(lab_key)
+    if not config:
+        _log.debug(f'load_algorithm: Unknown lab key "{lab_key}"')
+        return None
+
+    module_name = config['module']
+    func_name = config['algorithm']
+
+    # Default local search paths.
+    if local_paths is None:
+        local_paths = [
+            'algorithms/coa_parsers',
+            '../algorithms/coa_parsers',
+        ]
+
+    # ── Try local override first ──────────────────────────────
+    for local_dir in local_paths:
+        local_path = Path(local_dir)
+        module_file = local_path / f'{module_name}.py'
+        if module_file.exists():
+            try:
+                spec = importlib.util.spec_from_file_location(
+                    f'coa_parsers.{module_name}', str(module_file),
+                )
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                func = getattr(mod, func_name, None)
+                if func and callable(func):
+                    _log.debug(
+                        f'load_algorithm: Loaded {func_name} '
+                        f'from local {module_file}'
+                    )
+                    return func
+            except Exception as e:
+                _log.warning(
+                    f'load_algorithm: Failed to load local '
+                    f'{module_file}: {e}'
+                )
+
+    # ── Fall back to cannlytics package ───────────────────────
+    try:
+        mod = importlib.import_module(
+            f'cannlytics.data.coas.algorithms.{module_name}'
+        )
+        func = getattr(mod, func_name, None)
+        if func and callable(func):
+            _log.debug(
+                f'load_algorithm: Loaded {func_name} '
+                f'from cannlytics package'
+            )
+            return func
+    except (ImportError, AttributeError) as e:
+        _log.debug(
+            f'load_algorithm: cannlytics package import failed: {e}'
+        )
+
+    _log.warning(f'load_algorithm: Could not load algorithm for "{lab_key}"')
+    return None
+
+
+def adapt_algorithm_output(
+        raw_output: Dict,
+        pdf_hash: str,
+        lab_key: str,
+        lab_registry: Optional[Dict] = None,
+        elapsed: float = 0.0,
+    ) -> Optional[Dict]:
+    """Adapt legacy algorithmic parser output to the hybrid cache schema.
+
+    Legacy CoADoc algorithms return a flat dictionary with mixed
+    metadata and a nested 'results' list. This function transforms
+    that into the standardized cache format used by the hybrid engine.
+
+    Args:
+        raw_output:     Raw dict from the algorithmic parser.
+        pdf_hash:       SHA-256 hash of the source PDF.
+        lab_key:        Lab registry key (e.g., 'kaycha').
+        lab_registry:   Lab registry dict.
+        elapsed:        Parse time in seconds.
+
+    Returns:
+        Dict with 'metadata' and per-analysis result dicts
+        matching the hybrid cache schema, or None on failure.
+    """
+    if lab_registry is None:
+        lab_registry = LAB_REGISTRY
+    if not raw_output or not isinstance(raw_output, dict):
+        return None
+
+    config = lab_registry.get(lab_key, {})
+    version = config.get('version', '0.0.0')
+
+    # ── Common attribution fields ─────────────────────────────
+    attribution = {
+        'pdf_hash': pdf_hash,
+        'parsing_method': 'algorithm',
+        'parsing_algorithm': f'{lab_key}_v{version}',
+        'parsing_model': None,
+        'parsing_provider': 'local',
+        'parsing_time': round(elapsed, 2),
+        'parsing_cost': 0.0,
+    }
+
+    # ── Extract metadata fields ───────────────────────────────
+    # Metadata is everything EXCEPT 'results' and 'analyses'.
+    metadata_keys = {
+        'product_name', 'strain_name', 'product_type',
+        'date_tested', 'date_received', 'date_collected',
+        'batch_number', 'batch_size',
+        'lab', 'lab_license_number', 'lab_address', 'lab_city',
+        'lab_state', 'lab_zipcode',
+        'producer', 'producer_street', 'producer_city',
+        'producer_state', 'producer_zipcode',
+        'producer_license_number',
+        'distributor', 'distributor_license_number',
+        'sample_id', 'lab_id', 'sample_weight',
+        'total_cannabinoids', 'total_cbd', 'total_thc',
+        'total_terpenes', 'status',
+    }
+    metadata = {**attribution}
+    for key in metadata_keys:
+        if key in raw_output:
+            metadata[key] = raw_output[key]
+
+    # ── Extract analyses list ──────────────────────────────────
+    analyses_raw = raw_output.get('analyses', '[]')
+    if isinstance(analyses_raw, str):
+        try:
+            analyses_list = json.loads(analyses_raw)
+        except (json.JSONDecodeError, TypeError):
+            analyses_list = []
+    elif isinstance(analyses_raw, list):
+        analyses_list = analyses_raw
+    else:
+        analyses_list = []
+    metadata['analyses'] = analyses_list
+
+    # ── Extract and categorize results ────────────────────────
+    results_raw = raw_output.get('results', '[]')
+    if isinstance(results_raw, str):
+        try:
+            results_list = json.loads(results_raw)
+        except (json.JSONDecodeError, TypeError):
+            results_list = []
+    elif isinstance(results_raw, list):
+        results_list = results_raw
+    else:
+        results_list = []
+
+    # Group results by analysis type.
+    analysis_groups: Dict[str, List[Dict]] = {}
+    for result in results_list:
+        if not isinstance(result, dict):
+            continue
+        analysis = result.get('analysis', 'unknown')
+        # Normalize analysis name to match ANALYSIS_CONFIGS keys.
+        analysis_normalized = analysis.lower().replace(' ', '_')
+        # Map common variations.
+        if 'cannab' in analysis_normalized:
+            analysis_normalized = 'cannabinoids'
+        elif 'terp' in analysis_normalized:
+            analysis_normalized = 'terpenes'
+        elif 'pestic' in analysis_normalized:
+            analysis_normalized = 'pesticides'
+        elif 'heavy' in analysis_normalized or 'metal' in analysis_normalized:
+            analysis_normalized = 'heavy_metals'
+        elif 'micro' in analysis_normalized:
+            analysis_normalized = 'microbials'
+        elif 'solvent' in analysis_normalized:
+            analysis_normalized = 'residual_solvents'
+        elif 'moisture' in analysis_normalized or 'water' in analysis_normalized:
+            analysis_normalized = 'moisture_foreign_matter'
+        if analysis_normalized not in analysis_groups:
+            analysis_groups[analysis_normalized] = []
+        analysis_groups[analysis_normalized].append(result)
+
+    # Build per-analysis cache entries.
+    analysis_entries = {}
+    for analysis_name, results in analysis_groups.items():
+        analysis_entries[analysis_name] = {
+            **attribution,
+            'results': results,
+        }
+
+    return {
+        'metadata': metadata,
+        'analyses': analysis_entries,
+    }
 
 
 # ╔══════════════════════════════════════════════════════════════════╗
@@ -1360,11 +1854,13 @@ class COAParser:
             state: str,
             provider: str = 'openai',
             model: Optional[str] = None,
+            method: str = 'auto',
             data_dir: Optional[Path] = None,
             cache_dir: Optional[Path] = None,
             log_dir: Optional[Path] = None,
             budget: Optional[float] = None,
             max_parses: Optional[int] = None,
+            qrustie_path: Optional[str] = None,
             logger: Optional[logging.Logger] = None,
         ):
         self.state = state.lower()
@@ -1374,6 +1870,8 @@ class COAParser:
         self.log_dir = log_dir or DEFAULT_LOG_DIR
         self.budget = budget
         self.max_parses = max_parses
+        self.method = method  # 'auto', 'algorithm', 'ai'
+        self.qrustie_path = qrustie_path
 
         # Ensure directories exist.
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -1386,14 +1884,17 @@ class COAParser:
             log_dir=str(self.log_dir),
         )
 
-        # Initialize AI client.
+        # Initialize AI client (only if method allows AI).
         config = dotenv_values('../.env')
-        self.ai_client = AIClient(
-            provider=provider,
-            model=model,
-            config=config,
-            logger=self.logger,
-        )
+        if method != 'algorithm':
+            self.ai_client = AIClient(
+                provider=provider,
+                model=model,
+                config=config,
+                logger=self.logger,
+            )
+        else:
+            self.ai_client = None
 
         # Initialize cost tracker.
         self.cost_tracker = CostTracker()
@@ -1408,6 +1909,22 @@ class COAParser:
             self.analysis_caches[analysis_name] = Bogart(
                 str(self.cache_dir / f'results-{self.state}-{analysis_name}-{model_tag}.jsonl')
             )
+
+        # Separate cache for algorithm-parsed results.
+        # Algorithm results are stored as flat, unified records (metadata +
+        # all results in one entry) rather than the split metadata/analysis
+        # format used by AI parsing. This enables:
+        #   1. Clean benchmarking (same pdf_hash in both caches = comparison)
+        #   2. Natural format per method (algorithms return everything at once)
+        #   3. Independent re-parsing without cache pollution
+        # File: results-{state}-algorithm.jsonl
+        self.algo_results_cache = Bogart(
+            str(self.cache_dir / f'results-{self.state}-algorithm.jsonl')
+        )
+
+        # Preload algorithmic parsers for recognized labs.
+        self._algorithm_cache: Dict[str, Optional[Callable]] = {}
+        self._algo_stats = {'identified': 0, 'parsed': 0, 'failed': 0, 'ai_fallback': 0}
 
     @property
     def pdf_dir(self) -> Path:
@@ -1499,8 +2016,8 @@ class COAParser:
                 )
                 break
 
-            # Provider exhaustion check.
-            if not self.ai_client.is_available:
+            # Provider exhaustion check (only for AI-dependent modes).
+            if self.method != 'algorithm' and self.ai_client and not self.ai_client.is_available:
                 self.logger.warning('AI provider exhausted. Stopping.')
                 break
 
@@ -1519,25 +2036,33 @@ class COAParser:
                 else:
                     parsed_count += 1
             except Exception as e:
-                self.logger.error(f'Error parsing {pdf_hash}: {e}')
+                import traceback
+                self.logger.error(
+                    f'Error parsing {pdf_hash}: {e}\n'
+                    f'{traceback.format_exc()}'
+                )
                 error_count += 1
 
         # Summary.
         summary = {
             'state': self.state,
+            'method': self.method,
             'total_pdfs': total,
             'parsed': parsed_count,
             'skipped': skipped_count,
             'errors': error_count,
             'costs': self.cost_tracker.summary(),
-            'flex_enabled': self.ai_client.use_flex,
-            'flex_failures': self.ai_client._flex_failures,
+            'flex_enabled': self.ai_client.use_flex if self.ai_client else False,
+            'flex_failures': self.ai_client._flex_failures if self.ai_client else 0,
+            'algorithm_stats': self._algo_stats,
         }
+        algo = self._algo_stats
         self.logger.info(
             f'Parse complete. Parsed: {parsed_count}, '
             f'Skipped: {skipped_count}, Errors: {error_count}. '
-            f'Cost: ${self.cost_tracker.total_cost:.4f}'
-            f'{" (flex)" if self.ai_client.use_flex else ""}'
+            f'Cost: ${self.cost_tracker.total_cost:.4f}. '
+            f'Algorithm: {algo["parsed"]} parsed, {algo["identified"]} identified, '
+            f'{algo["failed"]} failed, {algo["ai_fallback"]} AI fallback.'
         )
         return summary
 
@@ -1547,10 +2072,16 @@ class COAParser:
             file_path: str,
             analyses: Optional[List[str]] = None,
         ) -> str:
-        """Parse a single COA PDF.
+        """Parse a single COA PDF using the hybrid approach.
 
-        Three parsing strategies depending on COA characteristics:
+        Routing strategy:
+        1. **Algorithm-first** (method='auto' or 'algorithm'):
+           Identify the lab → load parser → run → validate → cache.
+           If successful, return immediately (free, fast, deterministic).
+        2. **AI fallback** (method='auto' with failed algorithm, or 'ai'):
+           Use the multi-strategy AI parsing engine.
 
+        Three AI parsing strategies depending on COA characteristics:
         1. **Single-page COAs** (1 page): One-shot parse extracts
            metadata + all results in a single API call.
         2. **Multi-page COAs with text** (2+ pages): Page-targeted
@@ -1560,8 +2091,34 @@ class COAParser:
            sending the full PDF via the Responses API so the model
            can OCR the content.
 
-        Returns 'parsed' or 'skipped'.
+        Returns 'parsed', 'skipped', or 'algorithm_parsed'.
         """
+        # ── HYBRID ROUTING: Try algorithmic parsing first ─────────
+        if self.method in ('auto', 'algorithm'):
+            algo_result = self._try_algorithmic_parse(
+                pdf_hash, file_path, analyses,
+            )
+            if algo_result == 'algorithm_parsed':
+                return 'parsed'
+            elif self.method == 'algorithm':
+                # Algorithm-only mode: skip if no algorithm available.
+                if algo_result == 'no_algorithm':
+                    self.logger.info(
+                        f'No algorithm available for this COA. '
+                        f'Skipping (method=algorithm).'
+                    )
+                    return 'skipped'
+                elif algo_result == 'algorithm_failed':
+                    self.logger.warning(
+                        f'Algorithm failed. Skipping (method=algorithm).'
+                    )
+                    return 'skipped'
+            # else: method='auto', algorithm failed → fall through to AI
+
+        # ── AI PARSING: Standard multi-strategy AI engine ─────────
+        if self.ai_client is None or not self.ai_client.is_available:
+            self.logger.warning('AI client not available. Skipping.')
+            return 'skipped'
         # ── Pre-flight: PDF info ─────────────────────────────────
         pdf_info = get_pdf_info(file_path)
         num_pages = pdf_info.get('num_pages', 1)
@@ -1648,6 +2205,8 @@ class COAParser:
             elapsed = time.time() - start
             metadata = {
                 'pdf_hash': pdf_hash,
+                'parsing_method': 'ai',
+                'parsing_algorithm': None,
                 'parsing_model': self.ai_client.model,
                 'parsing_provider': self.ai_client.provider,
                 'parsing_time': round(elapsed, 2),
@@ -1778,6 +2337,8 @@ class COAParser:
             if parsed is not None:
                 cache_entry = {
                     'pdf_hash': pdf_hash,
+                    'parsing_method': 'ai',
+                    'parsing_algorithm': None,
                     'parsing_model': self.ai_client.model,
                     'parsing_provider': self.ai_client.provider,
                     'parsing_time': round(elapsed, 2),
@@ -1798,6 +2359,176 @@ class COAParser:
                 self.logger.warning(f'{analysis_name}: parse failed')
 
         return 'parsed'
+
+    def _try_algorithmic_parse(
+            self,
+            pdf_hash: str,
+            file_path: str,
+            analyses: Optional[List[str]] = None,
+        ) -> str:
+        """Attempt to parse a COA using a deterministic algorithm.
+
+        This is the algorithmic fast path. If the lab is identified
+        and an algorithm is available and succeeds, the results are
+        cached as a unified flat record in the algorithm cache
+        (``results-{state}-algorithm.jsonl``), completely separate
+        from the AI-parsed cache files.
+
+        Returns:
+            'algorithm_parsed': Successfully parsed algorithmically.
+            'no_algorithm': Lab not recognized or no algorithm available.
+            'algorithm_failed': Algorithm raised an exception.
+        """
+        # ── Check algorithm cache first ───────────────────────────
+        if self.algo_results_cache.get(pdf_hash):
+            self.logger.info(f'Algorithm cache hit: {pdf_hash[:12]}...')
+            self._algo_stats['parsed'] += 1
+            return 'algorithm_parsed'
+
+        # ── Step 1: Identify the lab ──────────────────────────────
+        lab_key = identify_lab(
+            pdf_path=file_path,
+            lab_registry=LAB_REGISTRY,
+            deep_search=True,
+            qr_fallback=bool(self.qrustie_path),
+            qrustie_path=self.qrustie_path,
+            logger=self.logger,
+        )
+        if lab_key is None:
+            return 'no_algorithm'
+
+        self._algo_stats['identified'] += 1
+        lab_name = LAB_REGISTRY[lab_key]['name']
+        self.logger.info(f'Lab identified: {lab_name} ({lab_key})')
+
+        # ── Step 2: Load the algorithm ────────────────────────────
+        if lab_key not in self._algorithm_cache:
+            self._algorithm_cache[lab_key] = load_algorithm(
+                lab_key, logger=self.logger,
+            )
+        algorithm = self._algorithm_cache[lab_key]
+        if algorithm is None:
+            self.logger.info(
+                f'No loadable algorithm for {lab_name}. '
+                f'Falling back to AI.'
+            )
+            return 'no_algorithm'
+
+        # ── Step 3: Run the algorithm ─────────────────────────────
+        self.logger.info(
+            f'Running algorithmic parser: {lab_key} '
+            f'v{LAB_REGISTRY[lab_key].get("version", "?")}'
+        )
+        start = time.time()
+        try:
+            raw_output = algorithm(None, file_path)
+        except Exception as e:
+            import traceback
+            elapsed = time.time() - start
+            self.logger.warning(
+                f'Algorithm {lab_key} failed after {elapsed:.1f}s: {e}\n'
+                f'{traceback.format_exc()}'
+            )
+            self._algo_stats['failed'] += 1
+            return 'algorithm_failed'
+
+        elapsed = time.time() - start
+
+        if not raw_output or not isinstance(raw_output, dict):
+            self.logger.warning(
+                f'Algorithm {lab_key} returned empty/invalid output.'
+            )
+            self._algo_stats['failed'] += 1
+            return 'algorithm_failed'
+
+        # ── Step 4: Adapt output to hybrid cache schema ───────────
+        adapted = adapt_algorithm_output(
+            raw_output, pdf_hash, lab_key, elapsed=elapsed,
+        )
+        if adapted is None:
+            self.logger.warning(
+                f'Algorithm output adaptation failed for {lab_key}.'
+            )
+            self._algo_stats['failed'] += 1
+            return 'algorithm_failed'
+
+        # ── Step 5: Build flat unified record ─────────────────────
+        # Algorithm results are stored as flat, pre-merged records
+        # in a SEPARATE cache from AI results. Each record has
+        # metadata fields at the top level and all analyte results
+        # combined into a single 'results' JSON list. This matches
+        # the shape that agg_results.py produces AFTER its AI merge
+        # step, so algorithm records can be loaded directly.
+        metadata = adapted['metadata']
+        analysis_entries = adapted.get('analyses', {})
+
+        # Combine all analysis results into a single list.
+        all_results = []
+        analyses_present = []
+        for analysis_name, entry in analysis_entries.items():
+            results_list = entry.get('results', [])
+            if results_list:
+                analyses_present.append(analysis_name)
+            for r in results_list:
+                if isinstance(r, dict) and 'analysis' not in r:
+                    r['analysis'] = analysis_name
+                all_results.append(r)
+
+        # Build the flat record.
+        version = LAB_REGISTRY[lab_key].get('version', '0.0.0')
+        flat_record = {
+            'pdf_hash': pdf_hash,
+            'state': self.state,
+            'parsing_method': 'algorithm',
+            'parsing_algorithm': f'{lab_key}_v{version}',
+            'parsing_model': None,
+            'parsing_provider': 'local',
+            'parsing_time': round(elapsed, 2),
+            'parsing_cost': 0.0,
+        }
+
+        # Copy metadata fields.
+        for key in [
+            'product_name', 'strain_name', 'product_type',
+            'date_tested', 'date_received', 'date_collected',
+            'batch_number', 'batch_size', 'sample_weight',
+            'lab', 'lab_license_number', 'lab_address',
+            'lab_city', 'lab_state', 'lab_zipcode',
+            'producer', 'producer_street', 'producer_city',
+            'producer_state', 'producer_zipcode',
+            'producer_license_number',
+            'distributor', 'distributor_license_number',
+            'sample_id', 'lab_id',
+            'total_thc', 'total_cbd', 'total_cannabinoids',
+            'total_terpenes', 'status',
+            'lab_results_url', 'metrc_ids',
+        ]:
+            if key in metadata:
+                flat_record[key] = metadata[key]
+
+        # Merge the analyses list from metadata with what we found.
+        meta_analyses = metadata.get('analyses', [])
+        if isinstance(meta_analyses, str):
+            try:
+                meta_analyses = json.loads(meta_analyses)
+            except (json.JSONDecodeError, TypeError):
+                meta_analyses = []
+        all_analyses = sorted(set(meta_analyses) | set(analyses_present))
+        flat_record['analyses'] = json.dumps(all_analyses)
+        flat_record['results'] = json.dumps(all_results, default=str)
+
+        # Save to the unified algorithm cache (separate from AI caches).
+        self.algo_results_cache.set(pdf_hash, flat_record)
+
+        self._algo_stats['parsed'] += 1
+        self.logger.info(
+            f'Algorithm parsed: {lab_name}, '
+            f'{len(analyses_present)} analyses, '
+            f'{len(all_results)} results, '
+            f'{elapsed:.1f}s, $0.00 '
+            f'(method=algorithm, algo={lab_key})'
+        )
+        return 'algorithm_parsed'
 
     def _metadata_needs_retry(self, parsed: Dict) -> bool:
         """Check if metadata is missing key fields (likely a cover sheet).
@@ -1874,6 +2605,8 @@ class COAParser:
 
         metadata = {
             'pdf_hash': pdf_hash,
+            'parsing_method': 'ai',
+            'parsing_algorithm': None,
             'parsing_model': self.ai_client.model,
             'parsing_provider': self.ai_client.provider,
             'parsing_time': round(elapsed, 2),
@@ -1900,6 +2633,8 @@ class COAParser:
 
             cache_entry = {
                 'pdf_hash': pdf_hash,
+                'parsing_method': 'ai',
+                'parsing_algorithm': None,
                 'parsing_model': self.ai_client.model,
                 'parsing_provider': self.ai_client.provider,
                 'parsing_time': round(elapsed, 2),
@@ -1929,8 +2664,10 @@ class COAParser:
         """Get statistics about the current cache state."""
         stats = {
             'state': self.state,
-            'model': self.ai_client.model,
-            'provider': self.ai_client.provider,
+            'method': self.method,
+            'model': self.ai_client.model if self.ai_client else 'N/A',
+            'provider': self.ai_client.provider if self.ai_client else 'local',
+            'algorithm_records': len(self.algo_results_cache.to_df()),
             'metadata': len(self.metadata_cache.to_df()),
         }
         for analysis_name, cache in self.analysis_caches.items():
@@ -1984,6 +2721,12 @@ Provider Priority: anthropic > openai > gemini > xai
     parser.add_argument(
         '--model', '-m', type=str, default=None,
         help='Specific model name (default: provider default)',
+    )
+    parser.add_argument(
+        '--method', type=str, default='auto',
+        choices=['auto', 'algorithm', 'ai'],
+        help='Parsing method: auto (algorithm-first, AI-fallback), '
+             'algorithm (deterministic only), ai (AI only). Default: auto.',
     )
 
     # Scope options.
@@ -2039,6 +2782,7 @@ Provider Priority: anthropic > openai > gemini > xai
         state=args.state,
         provider=args.provider,
         model=args.model,
+        method=args.method,
         data_dir=Path(args.data_dir) if args.data_dir else None,
         cache_dir=Path(args.cache_dir) if args.cache_dir else None,
         budget=args.budget,
@@ -2058,7 +2802,9 @@ Provider Priority: anthropic > openai > gemini > xai
         print(f'\nDry Run: {len(pdfs):,} PDFs discovered')
         if not pdfs.empty:
             print(f'  Directory: {coa_parser.pdf_dir}')
-            print(f'  Provider: {args.provider} ({coa_parser.ai_client.model})')
+            print(f'  Method: {args.method}')
+            if coa_parser.ai_client:
+                print(f'  Provider: {args.provider} ({coa_parser.ai_client.model})')
             if args.sample_size:
                 print(f'  Sample size: {args.sample_size}')
             if args.max_parses:
@@ -2075,8 +2821,11 @@ Provider Priority: anthropic > openai > gemini > xai
         return
 
     if args.clear_cache:
-        print(f'\nClearing cache for {args.state.upper()} / {coa_parser.ai_client.model}...')
-        cache_pattern = f'results-{args.state}-*-{coa_parser.ai_client.model.replace(".", "_")}*'
+        model_tag = 'none'
+        if coa_parser.ai_client:
+            model_tag = coa_parser.ai_client.model
+        print(f'\nClearing cache for {args.state.upper()} / {model_tag}...')
+        cache_pattern = f'results-{args.state}-*-{model_tag.replace(".", "_")}*'
         import glob
         cache_files = glob.glob(str(coa_parser.cache_dir / cache_pattern))
         if not cache_files:
@@ -2089,11 +2838,16 @@ Provider Priority: anthropic > openai > gemini > xai
         return
 
     # Run parsing.
-    print(f'\n🔬 Cannlytics AI COA Parser')
+    print(f'\n🔬 Cannlytics COA Doc — Hybrid Parser')
     print(f'   State: {args.state.upper()}')
-    print(f'   Provider: {args.provider} ({coa_parser.ai_client.model})')
-    if coa_parser.ai_client.use_flex:
-        print(f'   Pricing: flex (50% discount)')
+    print(f'   Method: {args.method}')
+    if args.method != 'algorithm':
+        print(f'   AI Provider: {args.provider} ({coa_parser.ai_client.model})')
+        if coa_parser.ai_client.use_flex:
+            print(f'   Pricing: flex (50% discount)')
+    if args.method in ('auto', 'algorithm'):
+        active_labs = [k for k, v in LAB_REGISTRY.items() if v.get('tier', 4) <= 3]
+        print(f'   Algorithms: {len(active_labs)} labs registered ({", ".join(active_labs)})')
     if args.budget:
         print(f'   Budget: ${args.budget:.2f}')
     if args.max_parses:
@@ -2111,13 +2865,21 @@ Provider Priority: anthropic > openai > gemini > xai
     print('📋 PARSE SUMMARY')
     print('=' * 60)
     print(f'  State: {summary["state"].upper()}')
+    print(f'  Method: {summary["method"]}')
     print(f'  Total PDFs: {summary["total_pdfs"]:,}')
     print(f'  Parsed: {summary["parsed"]:,}')
     print(f'  Skipped (cached): {summary["skipped"]:,}')
     print(f'  Errors: {summary["errors"]:,}')
+    algo = summary.get('algorithm_stats', {})
+    if algo.get('identified', 0) > 0 or algo.get('parsed', 0) > 0:
+        print(f'  --- Algorithm Stats ---')
+        print(f'  Labs identified: {algo.get("identified", 0):,}')
+        print(f'  Algorithm parsed: {algo.get("parsed", 0):,}')
+        print(f'  Algorithm failed: {algo.get("failed", 0):,}')
+        print(f'  AI fallback: {algo.get("ai_fallback", 0):,}')
     costs = summary['costs']
-    print(f'  Total cost: ${costs["total_cost"]:.4f}')
-    print(f'  Total API calls: {costs["total_calls"]:,}')
+    print(f'  Total AI cost: ${costs["total_cost"]:.4f}')
+    print(f'  Total AI calls: {costs["total_calls"]:,}')
     if costs['by_provider']:
         print(f'  By provider: {costs["by_provider"]}')
     if summary.get('flex_enabled'):
