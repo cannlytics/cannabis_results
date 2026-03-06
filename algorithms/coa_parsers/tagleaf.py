@@ -5,7 +5,7 @@ Copyright (c) 2022-2026 Cannlytics
 Authors:
     Keegan Skeate <https://github.com/keeganskeate>
 Created: 7/15/2022
-Updated: 3/5/2026
+Updated: 3/6/2026
 License: MIT License <https://github.com/cannlytics/cannlytics/blob/main/LICENSE>
 
 Description:
@@ -156,12 +156,19 @@ METRC_PREFIXES = ['1A40']
 
 def _snake_case(text: str) -> str:
     """Convert text to snake_case key."""
-    text = text.strip().upper()
-    if text in ANALYTE_KEY_MAP:
-        return ANALYTE_KEY_MAP[text]
-    # General snake_case conversion.
-    s = text.lower().strip()
+    stripped = text.strip()
+    # Try exact match first (handles Greek letters like α, β, Δ, γ).
+    if stripped.upper() in ANALYTE_KEY_MAP:
+        return ANALYTE_KEY_MAP[stripped.upper()]
+    # Try original case (Greek lowercase α/β stay lowercase with .upper()).
+    if stripped in ANALYTE_KEY_MAP:
+        return ANALYTE_KEY_MAP[stripped]
+    # Normalize Greek letters to Latin before snake_case fallback.
+    s = stripped.lower().strip()
+    s = s.replace('α', 'alpha_').replace('β', 'beta_')
+    s = s.replace('γ', 'gamma_').replace('δ', 'delta_')
     s = re.sub(r'[^a-z0-9]+', '_', s)
+    s = re.sub(r'_+', '_', s)
     s = s.strip('_')
     return s
 
@@ -231,33 +238,57 @@ def _parse_header(lines: List[str]) -> Dict:
     header_line = None
     license_line = None
 
-    for i, line in enumerate(lines[:8]):
+    for i, line in enumerate(lines[:20]):
         if '//' in line and 'PH:' in line.upper():
             header_line = line.strip()
+        # infiniteCAL format: "Lab Name • Address • Phone"
+        if not header_line and '•' in line and re.search(r'\d{7,}', line):
+            header_line = line.strip()
+            obs['_header_format'] = 'infinitecal'
         if 'LICENSE' in line.upper() and '#' in line:
             license_line = line.strip()
 
     if header_line:
-        parts = [p.strip() for p in header_line.split('//')]
-        if len(parts) >= 1:
-            obs['lab'] = parts[0]
-        if len(parts) >= 2:
-            obs['lab_address'] = parts[1]
-            # Parse address components.
-            addr = parts[1]
-            addr_match = re.search(
-                r'^(.+?)\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)$', addr)
-            if addr_match:
-                city_street = addr_match.group(1)
-                obs['lab_state'] = addr_match.group(2).lower()
-                obs['lab_zipcode'] = addr_match.group(3)
-                # City is typically the last word(s) before state.
-                city_match = re.search(r'(\b[A-Z][A-Z ]+)$', city_street)
-                if city_match:
-                    obs['lab_city'] = city_match.group(1).strip()
-        if len(parts) >= 3:
-            phone = parts[2].replace('PH:', '').strip()
-            obs['lab_phone'] = phone
+        fmt = obs.pop('_header_format', 'belcosta')
+        if fmt == 'infinitecal':
+            # infiniteCAL: "Lab Name • Address City ST ZIP • Phone"
+            parts = [p.strip() for p in header_line.split('•')]
+            if len(parts) >= 1:
+                obs['lab'] = parts[0]
+            if len(parts) >= 2:
+                obs['lab_address'] = parts[1]
+                addr = parts[1]
+                addr_match = re.search(
+                    r'^(.+?)\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)$', addr)
+                if addr_match:
+                    city_street = addr_match.group(1)
+                    obs['lab_state'] = addr_match.group(2).lower()
+                    obs['lab_zipcode'] = addr_match.group(3)
+                    city_match = re.search(r'(\b[A-Z][A-Z ]+)$', city_street)
+                    if city_match:
+                        obs['lab_city'] = city_match.group(1).strip()
+            if len(parts) >= 3:
+                obs['lab_phone'] = re.sub(r'[^0-9]', '', parts[2])
+        else:
+            # BelCosta format: "Lab // Address // PH: Phone"
+            parts = [p.strip() for p in header_line.split('//')]
+            if len(parts) >= 1:
+                obs['lab'] = parts[0]
+            if len(parts) >= 2:
+                obs['lab_address'] = parts[1]
+                addr = parts[1]
+                addr_match = re.search(
+                    r'^(.+?)\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)$', addr)
+                if addr_match:
+                    city_street = addr_match.group(1)
+                    obs['lab_state'] = addr_match.group(2).lower()
+                    obs['lab_zipcode'] = addr_match.group(3)
+                    city_match = re.search(r'(\b[A-Z][A-Z ]+)$', city_street)
+                    if city_match:
+                        obs['lab_city'] = city_match.group(1).strip()
+            if len(parts) >= 3:
+                phone = parts[2].replace('PH:', '').strip()
+                obs['lab_phone'] = phone
 
     if license_line:
         lic_match = re.search(r'#[:\s]*(\S+)', license_line)
@@ -271,10 +302,18 @@ def _parse_sample_line(lines: List[str]) -> Dict:
     """Parse the SAMPLE: line for product_name, product_type, client, status."""
     obs = {}
     for line in lines[:10]:
-        if line.strip().upper().startswith('SAMPLE:'):
-            # Pattern: SAMPLE: {name} ({type}) // CLIENT: {client} // BATCH: {status}
-            content = line.split(':', 1)[1].strip()
-            parts = [p.strip() for p in content.split('//')]
+        line_stripped = line.strip()
+        # Match both "SAMPLE:" (BelCosta) and "Sample:" (infiniteCAL).
+        if line_stripped.upper().startswith('SAMPLE:'):
+            content = line_stripped.split(':', 1)[1].strip()
+
+            # Determine separator: '//' (BelCosta) or '•' (infiniteCAL).
+            if '//' in content:
+                parts = [p.strip() for p in content.split('//')]
+            elif '•' in content:
+                parts = [p.strip() for p in content.split('•')]
+            else:
+                parts = [content]
 
             if parts:
                 # Extract product name and type.
@@ -305,7 +344,7 @@ def _parse_metadata_fields(text: str) -> Dict:
         'sample_id': r'SAMPLE\s*ID:\s*(\S+)',
         'date_collected': r'COLLECTED\s*ON:\s*(.+)',
         'date_received': r'RECEIVED\s*ON:\s*(.+)',
-        'batch_number': r'BATCH\s*(?:NO|ID)[.:]?\s*(\S+)',
+        'batch_number': r'BATCH\s*(?:NO|ID)[.:]?\s*[:\s]*([A-Za-z0-9][\w\-.]+)',
         'matrix': r'MATRIX:\s*(\S+)',
         'category': r'CATEGORY:\s*(\S+)',
         'cultivar': r'CULTIVAR:\s*(.+)',
@@ -441,6 +480,126 @@ def _detect_current_analysis(line: str) -> Optional[str]:
     return None
 
 
+# Known analyte names per analysis type for content-based inference.
+_CANNABINOID_NAMES = {
+    'CBC', 'CBCA', 'CBD', 'CBDA', 'CBDV', 'CBDVA', 'CBG', 'CBGA',
+    'CBL', 'CBN', 'CBT', 'THC', 'THCA', 'THCV', 'THCVA',
+}
+_TERPENE_NAMES = {
+    'MYRCENE', 'LIMONENE', 'CARYOPHYLLENE', 'HUMULENE', 'PINENE',
+    'LINALOOL', 'BISABOLOL', 'TERPINOLENE', 'TERPINENE', 'OCIMENE',
+    'FENCHOL', 'CAMPHENE', 'GUAIOL', 'NEROLIDOL', 'BORNEOL',
+    'GERANIOL', 'EUCALYPTOL', 'CYMENE', 'FENCHONE', 'CEDROL',
+    'CEDRENE', 'EUDESMOL', 'PULEGONE', 'MENTHOL', 'ISOPULEGOL',
+    'CAMPHOR', 'CARENE', 'GERANYL', 'ISOBORNEOL', 'CITRONELLOL',
+    'TOTAL TERPENES',
+}
+_PESTICIDE_NAMES = {
+    'ABAMECTIN', 'ACEPHATE', 'ACEQUINOCYL', 'ACETAMIPRID', 'ALDICARB',
+    'AZOXYSTROBIN', 'BIFENAZATE', 'BIFENTHRIN', 'BOSCALID', 'CAPTAN',
+    'CARBARYL', 'CARBOFURAN', 'CHLORANTRANILIPROLE', 'CHLORDANE',
+    'CHLORFENAPYR', 'CHLORPYRIFOS', 'CLOFENTEZINE', 'COUMAPHOS',
+    'CYFLUTHRIN', 'CYPERMETHRIN', 'DAMINOZIDE', 'DIAZINON',
+    'DICHLORVOS', 'DIMETHOATE', 'DIMETHOMORPH', 'ETHOPROPHOS',
+    'ETOFENPROX', 'ETOXAZOLE', 'FENHEXAMID', 'FENOXYCARB',
+    'FENPYROXIMATE', 'FIPRONIL', 'FLONICAMID', 'FLUDIOXONIL',
+    'HEXYTHIAZOX', 'IMAZALIL', 'IMIDACLOPRID', 'MALATHION',
+    'METALAXYL', 'METHIOCARB', 'METHOMYL', 'METHYL PARATHION',
+    'MEVINPHOS', 'MYCLOBUTANIL', 'NALED', 'OXAMYL', 'PACLOBUTRAZOL',
+    'PENTACHLORONITROBENZENE', 'PERMETHRIN', 'PHOSMET',
+    'PIPERONYLBUTOXIDE', 'PRALLETHRIN', 'PROPICONAZOLE', 'PROPOXUR',
+    'PYRETHRINS', 'PYRIDABEN', 'SPINETORAM', 'SPINOSAD',
+    'SPIROMESIFEN', 'SPIROTETRAMAT', 'SPIROXAMINE', 'TEBUCONAZOLE',
+    'THIACLOPRID', 'THIAMETHOXAM', 'TRIFLOXYSTROBIN',
+    'KRESOXIM-METHYL', 'KRESOXIM', 'CHLORPYRIFOS',
+}
+_HEAVY_METAL_NAMES = {'ARSENIC', 'CADMIUM', 'LEAD', 'MERCURY'}
+_MICROBIAL_NAMES = {
+    'ASPERGILLUS', 'SALMONELLA', 'E. COLI', 'SHIGA',
+}
+_MYCOTOXIN_NAMES = {'AFLATOXIN', 'OCHRATOXIN'}
+_SOLVENT_NAMES = {
+    'ACETONE', 'ACETONITRILE', 'BENZENE', 'BUTANE', 'CHLOROFORM',
+    'DICHLOROETHANE', 'ETHANOL', 'ETHYL ACETATE', 'ETHYLENE OXIDE',
+    'ETHYL ETHER', 'HEPTANE', 'HEXANE', 'ISOPROPYL', 'METHANOL',
+    'METHYLENE CHLORIDE', 'PENTANE', 'PROPANE', 'TOLUENE',
+    'TRICHLOROETHYLENE', 'XYLENE',
+}
+_MOISTURE_NAMES = {
+    'MOISTURE', 'WATER ACTIVITY', 'FOREIGN MATERIAL', 'IMBEDDED',
+    'INSECT FRAGMENT', 'MOLD', 'SAND', 'CINDERS',
+}
+
+
+def _infer_analysis_from_content(table) -> Optional[str]:
+    """Infer analysis type from the analyte names in a table's rows.
+
+    This is more reliable than section-header tracking for multi-section
+    pages where pdfplumber table positions don't map cleanly to text
+    line numbers.
+    """
+    if not table or len(table) < 2:
+        return None
+
+    # Collect analyte names from first ~8 data rows.
+    names = []
+    for row in table[1:9]:
+        if row and row[0]:
+            names.append(str(row[0]).strip().upper().replace('\n', ' '))
+
+    if not names:
+        return None
+
+    # Score each analysis type by how many analyte names match.
+    scores = {
+        'cannabinoids': 0, 'terpenes': 0, 'pesticides': 0,
+        'heavy_metals': 0, 'microbials': 0, 'mycotoxins': 0,
+        'residual_solvents': 0, 'moisture_foreign_matter': 0,
+    }
+    for name in names:
+        for known in _CANNABINOID_NAMES:
+            if known in name:
+                scores['cannabinoids'] += 1
+                break
+        for known in _TERPENE_NAMES:
+            if known in name:
+                scores['terpenes'] += 1
+                break
+        for known in _PESTICIDE_NAMES:
+            if known in name:
+                scores['pesticides'] += 1
+                break
+        for known in _HEAVY_METAL_NAMES:
+            if known in name:
+                scores['heavy_metals'] += 1
+                break
+        for known in _MICROBIAL_NAMES:
+            if known in name:
+                scores['microbials'] += 1
+                break
+        for known in _MYCOTOXIN_NAMES:
+            if known in name:
+                scores['mycotoxins'] += 1
+                break
+        for known in _SOLVENT_NAMES:
+            if known in name:
+                scores['residual_solvents'] += 1
+                break
+        for known in _MOISTURE_NAMES:
+            if known in name:
+                scores['moisture_foreign_matter'] += 1
+                break
+
+    # Return the type with the highest score (minimum 2 matches).
+    best = max(scores, key=scores.get)
+    if scores[best] >= 2:
+        return best
+    # Single match — still useful for small tables like heavy metals.
+    if scores[best] >= 1:
+        return best
+    return None
+
+
 def _parse_results_from_tables(pdf) -> Tuple[List[Dict], List[str]]:
     """Extract all analyte results from all pages using table extraction.
 
@@ -497,29 +656,25 @@ def _parse_results_from_tables(pdf) -> Tuple[List[Dict], List[str]]:
                 continue
 
             # ── Determine analysis type for this table ────────
-            # Use the section header context. For multi-section pages,
-            # find which section this table falls under.
-            table_analysis = page_default_analysis
+            # PRIMARY: Content-based inference from analyte names.
+            # This is the most reliable method for multi-section pages.
+            table_analysis = _infer_analysis_from_content(table)
 
-            # Refine: check if any section header keywords appear in
-            # the header_str itself or nearby table context.
-            for keyword, analysis in ANALYSIS_SECTION_MAP.items():
-                if keyword.upper() in header_str:
-                    table_analysis = analysis
-                    break
+            # FALLBACK 1: Check table header_str for analysis keywords.
+            if not table_analysis:
+                for keyword, analysis in ANALYSIS_SECTION_MAP.items():
+                    if keyword.upper() in header_str:
+                        table_analysis = analysis
+                        break
 
-            # If still no analysis, infer from header content.
+            # FALLBACK 2: Use section headers from page text.
+            if not table_analysis:
+                table_analysis = page_default_analysis
+
+            # FALLBACK 3: Infer from header units.
             if not table_analysis:
                 if 'µG/G' in header_str or 'UG/G' in header_str:
-                    # Could be pesticides, heavy metals, or solvents.
-                    if any(kw in text_upper for kw in ['PESTICIDE']):
-                        table_analysis = 'pesticides'
-                    elif any(kw in text_upper for kw in ['HEAVY METAL', 'ICP-MS']):
-                        table_analysis = 'heavy_metals'
-                    elif any(kw in text_upper for kw in ['SOLVENT']):
-                        table_analysis = 'residual_solvents'
-                    else:
-                        table_analysis = 'pesticides'
+                    table_analysis = 'pesticides'
                 elif 'µG/KG' in header_str or 'UG/KG' in header_str:
                     table_analysis = 'mycotoxins'
                 elif 'CFU' in header_str:
@@ -564,8 +719,32 @@ def _parse_results_from_tables(pdf) -> Tuple[List[Dict], List[str]]:
                     'THC/SRV', 'THC/PKG', '/SRV', '/PKG',
                     'TOTAL THC**', 'TOTAL CBD**', 'TOT THC', 'TOT CBD',
                     'TOTAL THC *', 'TOTAL CBD *',
+                    'TOTAL CANNABINOIDS', 'SUM OF CANNABINOIDS',
+                    'SUM OF TERPENES',
                 ]
                 if any(p in name_upper for p in skip_patterns):
+                    continue
+
+                # Skip status summary bar entries that pdfplumber may
+                # extract as table rows (e.g., "POTENCY PASS ...").
+                status_keywords = {
+                    'POTENCY', 'FOREIGN', 'METALS', 'MICROBIAL', 'MICRO',
+                    'MOISTURE', 'MOIST', 'MYCOTOXINS', 'MYCOTOXIN', 'MYCO',
+                    'PESTICIDES', 'PESTICIDE', 'PEST', 'SOLVENTS', 'SOLVENT',
+                    'TERPENES', 'TERPENE', 'TERP', 'WATER', 'ADDITIVES',
+                    'BATCH RESULT', 'PASS', 'FAIL', 'TESTED',
+                    'CANNABINOID OVERVIEW', 'REGULATORY COMPLIANCE',
+                    'RESULTS CERTIFIED', 'SAMPLE WAS TESTED',
+                    'ALL LQC SAMPLES', 'DRY-WEIGHT', 'DRY WEIGHT',
+                    'ACCREDITATIONS', 'A2LA ACCREDITED',
+                    'PAGE', 'CERTIFICATE OF ANALYSIS',
+                }
+                if name_upper in status_keywords:
+                    continue
+                # Also skip if first word is a status keyword and rest
+                # looks like "PASS" or "FAIL" or another keyword.
+                first_word = name_upper.split()[0] if name_upper.split() else ''
+                if first_word in status_keywords and len(analyte_name) < 30:
                     continue
 
                 key = _snake_case(analyte_name)
@@ -669,11 +848,37 @@ def parse_tagleaf_pdf(
             raise ValueError(f'Empty PDF: {pdf_path}')
 
         # ── Extract full text from page 1 ─────────────────────
-        page1_text = pdf.pages[0].extract_text() or ''
+        try:
+            page1_text = pdf.pages[0].extract_text() or ''
+        except Exception:
+            page1_text = ''
+        # Clean null bytes and common PDF ligature artifacts.
+        page1_text = page1_text.replace('\x00', '')
+        # "fi" ligature often garbled: "Innite" → "Infinite", "Certicate" → "Certificate"
+        page1_text = re.sub(r'\bInn(?:i|)te\b', 'Infinite', page1_text)
+        page1_text = re.sub(r'\bCerti(?:i|)cate\b', 'Certificate', page1_text)
+        page1_text = re.sub(r'\be(?:f|)cacy\b', 'efficacy', page1_text)
         lines = page1_text.split('\n')
 
         # ── Parse lab header ──────────────────────────────────
         obs = _parse_header(lines)
+
+        # Fallback lab detection from page text if header wasn't found.
+        if not obs.get('lab'):
+            _KNOWN_LABS = [
+                (r'Inn?finite\s+Chemical\s+Analysis\s+Labs?,?\s*([A-Z]{2})?',
+                 'Infinite Chemical Analysis Labs'),
+                (r'BelCosta\s+Labs?', 'BelCosta Labs'),
+                (r'Green\s+Precision\s+Analytics', 'Green Precision Analytics'),
+                (r'Verity\s+Analytics', 'Verity Analytics'),
+                (r'2\s+River\s+Labs', '2 River Labs, Inc'),
+                (r'Pure\s+Cannalyst\s+Labs', 'Pure Cannalyst Labs, Inc'),
+                (r'Pride\s+Analytics', 'Pride Analytics'),
+            ]
+            for pattern, lab_name in _KNOWN_LABS:
+                if re.search(pattern, page1_text, re.IGNORECASE):
+                    obs['lab'] = lab_name
+                    break
 
         # ── Parse sample line ─────────────────────────────────
         obs.update(_parse_sample_line(lines))
