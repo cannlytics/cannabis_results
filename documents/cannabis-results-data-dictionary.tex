@@ -52,7 +52,7 @@
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\textcolor{cannlyticssecondary}{\small Cannabis Results Data Dictionary}}
-\fancyhead[R]{\textcolor{cannlyticssecondary}{\small March 5, 2026}}
+\fancyhead[R]{\textcolor{cannlyticssecondary}{\small March 6, 2026}}
 \fancyfoot[C]{\textcolor{cannlyticssecondary}{\small Page \thepage\ of \pageref{LastPage}}}
 \renewcommand{\headrulewidth}{0.4pt}
 \renewcommand{\footrulewidth}{0pt}
@@ -112,11 +112,11 @@
     {\large
     \begin{tabular}{rl}
     \textbf{Prepared by:} & Cannlytics \\[0.25cm]
-    \textbf{Date:} & March 5, 2026 \\[0.25cm]
+    \textbf{Date:} & March 6, 2026 \\[0.25cm]
     \textbf{Coverage:} & United States \\[0.25cm]
-    \textbf{States:} & 4 \\[0.25cm]
-    \textbf{Total Records:} & 2,960 \\[0.25cm]
-    \textbf{Analyte Measurements:} & 239,438 \\[0.25cm]
+    \textbf{States:} & 5 \\[0.25cm]
+    \textbf{Total Records:} & 4,390 \\[0.25cm]
+    \textbf{Analyte Measurements:} & 425,255 \\[0.25cm]
     \textbf{Update Frequency:} & Weekly \\[0.25cm]
     \textbf{Format:} & CSV \\
     \end{tabular}
@@ -155,27 +155,27 @@ or licensing inquiries please email: contact@cannlytics.com
 \toprule
 \textbf{Metric} & \textbf{Value} \\
 \midrule
-Total Records & 2,960 \\
-U.S. States Covered & 4 \\
-Unique Testing Laboratories & 196 \\
-Unique Producers & 557 \\
-Data Sources & 1 \\
-Total Analyte Measurements & 239,438 \\
-Avg.\ Analytes per Record & 80.9 \\
-Total AI Parsing Cost & \$8.74 \\
+Total Records & 4,390 \\
+U.S. States Covered & 5 \\
+Unique Testing Laboratories & 186 \\
+Unique Producers & 564 \\
+Data Sources & 6 \\
+Total Analyte Measurements & 425,255 \\
+Avg.\ Analytes per Record & 96.9 \\
+Total AI Parsing Cost & \$6.23 \\
 \bottomrule
 \end{tabularx}
 }
 
 \vspace{0.5em}
 
-\noindent\textbf{Data completeness tiers:} high: 2,838, medium: 109, low: 9, incomplete: 4
+\noindent\textbf{Data completeness tiers:} high: 4,247, medium: 129, low: 10, incomplete: 4
 
 % ============================================================================
 \section{State Coverage}
 % ============================================================================
 
-The dataset currently spans \textbf{4} U.S.
+The dataset currently spans \textbf{5} U.S.
 states. Coverage varies by state depending on the availability of
 public COA data, active data collection sources, and regulatory
 transparency.
@@ -188,8 +188,9 @@ transparency.
 \toprule
 \textbf{State} & \textbf{Records} & \textbf{\%} & \textbf{State} & \textbf{Records} & \textbf{\%} \\
 \midrule
-Florida (FL) & 923 & 31.2\% & Arizona (AZ) & 612 & 20.7\% \\
-California (CA) & 887 & 30.0\% & New York (NY) & 538 & 18.2\% \\
+Missouri (MO) & 1,256 & 28.6\% & Arizona (AZ) & 631 & 14.4\% \\
+Florida (FL) & 984 & 22.4\% & New York (NY) & 568 & 12.9\% \\
+California (CA) & 951 & 21.7\% & & & \\
 \bottomrule
 \end{tabularx}
 }
@@ -210,13 +211,25 @@ across all states.
 \toprule
 \textbf{Product Type} & \textbf{Records} & \textbf{Proportion} & \textbf{Cumulative} \\
 \midrule
-\texttt{flower} & 1,085 & 36.7\% & 36.7\% \\
-\texttt{concentrate} & 804 & 27.2\% & 63.9\% \\
-\texttt{preroll} & 411 & 13.9\% & 77.8\% \\
-\texttt{vape} & 365 & 12.3\% & 90.1\% \\
-\texttt{edible} & 269 & 9.1\% & 99.2\% \\
-\texttt{topical} & 8 & 0.3\% & 99.5\% \\
-\texttt{tincture} & 5 & 0.2\% & 99.7\% \\
+\texttt{flower} & 1,998 & 45.5\% & 45.5\% \\
+\texttt{concentrate} & 732 & 16.7\% & 62.2\% \\
+\texttt{preroll} & 512 & 11.7\% & 73.9\% \\
+\texttt{edible} & 283 & 6.4\% & 80.3\% \\
+\texttt{concentrates \& extracts} & 280 & 6.4\% & 86.7\% \\
+\texttt{vape} & 243 & 5.5\% & 92.2\% \\
+\texttt{derivative} & 90 & 2.1\% & 94.3\% \\
+\texttt{plant} & 82 & 1.9\% & 96.2\% \\
+\texttt{concentrate, product inhalable} & 77 & 1.8\% & 98.0\% \\
+\texttt{infused} & 40 & 0.9\% & 98.9\% \\
+\texttt{flower, inhalable} & 12 & 0.3\% & 99.2\% \\
+\texttt{topical} & 8 & 0.2\% & 99.4\% \\
+\texttt{infused, solid edible} & 6 & 0.1\% & 99.5\% \\
+\texttt{infused flower/pre-roll, product inhalable} & 5 & 0.1\% & 99.6\% \\
+\texttt{tincture} & 3 & 0.1\% & 99.7\% \\
+\texttt{other} & 2 & 0.0\% & 99.7\% \\
+\texttt{infused, liquid edible} & 1 & 0.0\% & 99.7\% \\
+\texttt{pre-roll cannabis, product inhalable} & 1 & 0.0\% & 99.7\% \\
+\texttt{infused, non-inhalable} & 1 & 0.0\% & 99.7\% \\
 \bottomrule
 \end{tabularx}
 }
@@ -239,15 +252,15 @@ from the source COA.
 \toprule
 \textbf{Analysis Type} & \textbf{Records} & \textbf{Coverage} \\
 \midrule
-\texttt{cannabinoids} & 2,937 & 99.2\% \\
-\texttt{terpenes} & 2,896 & 97.8\% \\
-\texttt{microbials} & 529 & 17.9\% \\
-\texttt{pesticides} & 506 & 17.1\% \\
-\texttt{heavy\_metals} & 500 & 16.9\% \\
-\texttt{residual\_solvents} & 397 & 13.4\% \\
-\texttt{moisture\_foreign\_matter} & 390 & 13.2\% \\
-\texttt{other} & 201 & 6.8\% \\
-\texttt{safety} & 52 & 1.8\% \\
+\texttt{cannabinoids} & 4,365 & 99.4\% \\
+\texttt{terpenes} & 3,822 & 87.1\% \\
+\texttt{pesticides} & 2,554 & 58.2\% \\
+\texttt{heavy\_metals} & 1,565 & 35.6\% \\
+\texttt{microbials} & 1,417 & 32.3\% \\
+\texttt{residual\_solvents} & 1,060 & 24.1\% \\
+\texttt{moisture\_foreign\_matter} & 854 & 19.5\% \\
+\texttt{other} & 212 & 4.8\% \\
+\texttt{safety} & 3 & 0.1\% \\
 \bottomrule
 \end{tabularx}
 }
@@ -283,46 +296,46 @@ where the field has a non-empty value.
 \bottomrule
 \endlastfoot
 \fieldname{pdf\_hash} & string & 100.0\% & SHA-256 hash of the source COA PDF file. Serves as the primary deduplication key across all states. \\[0.4em]
-\fieldname{sample\_id} & string & 95.9\% & A lab-assigned identifier for the sample (e.g., \texttt{220415-001}). \\[0.4em]
+\fieldname{sample\_id} & string & 97.1\% & A lab-assigned identifier for the sample (e.g., \texttt{220415-001}). \\[0.4em]
 \fieldname{state} & string & 100.0\% & Two-letter U.S. state code where the product was tested (lowercase, e.g., \texttt{ca}). \\[0.4em]
 \fieldname{source} & string & 100.0\% & Name of the data source or collector that produced the COA (e.g., \texttt{flower\_company}, \texttt{kaycha}). \\[0.4em]
-\fieldname{product\_name} & string & 96.1\% & The commercial name of the product as printed on the COA. \\[0.4em]
-\fieldname{strain\_name} & string & 81.1\% & A strain or cultivar name, if specified. May be parsed from \texttt{product\_name} when not explicitly stated. \\[0.4em]
-\fieldname{product\_type} & string & 99.6\% & Standardized product category. One of: \texttt{flower}, \texttt{preroll}, \texttt{infused}, \texttt{concentrate}, \texttt{vape}, \texttt{edible}, \texttt{tincture}, \texttt{topical}. \\[0.4em]
-\fieldname{batch\_number} & string & 96.1\% & The manufacturer batch or lot number for the sampled product. \\[0.4em]
-\fieldname{batch\_size} & float & 93.7\% & The total batch size in grams, if reported on the COA. \\[0.4em]
-\fieldname{sample\_weight} & float & 97.7\% & The weight of the laboratory sample in grams. \\[0.4em]
-\fieldname{producer} & string & 91.0\% & The name of the licensed producer (cultivator or manufacturer). \\[0.4em]
-\fieldname{producer\_street} & string & 66.0\% & Street address of the producer facility. \\[0.4em]
-\fieldname{producer\_city} & string & 75.6\% & City of the producer facility. \\[0.4em]
-\fieldname{producer\_state} & string & 75.6\% & State of the producer facility (two-letter code). \\[0.4em]
-\fieldname{producer\_zipcode} & string & 70.0\% & ZIP code of the producer facility. \\[0.4em]
-\fieldname{producer\_license\_number} & string & 61.6\% & The state-issued license number for the producer. \\[0.4em]
-\fieldname{distributor} & string & 32.1\% & The name of the product distributor, if applicable. \\[0.4em]
-\fieldname{distributor\_license\_number} & string & 29.6\% & The state-issued license number for the distributor, if applicable. \\[0.4em]
-\fieldname{lab} & string & 98.0\% & The name of the testing laboratory that performed the analyses. \\[0.4em]
-\fieldname{lab\_license\_number} & string & 82.6\% & The state-issued license number for the testing laboratory. \\[0.4em]
-\fieldname{lab\_address} & string & 94.7\% & Full street address of the testing laboratory. \\[0.4em]
-\fieldname{lab\_city} & string & 94.9\% & City of the testing laboratory. \\[0.4em]
-\fieldname{lab\_state} & string & 94.9\% & State of the testing laboratory (two-letter code). \\[0.4em]
-\fieldname{lab\_zipcode} & string & 91.5\% & ZIP code of the testing laboratory. \\[0.4em]
-\fieldname{date\_tested} & date & 92.6\% & ISO-formatted date when laboratory analysis was completed (\texttt{YYYY-MM-DD}). \\[0.4em]
-\fieldname{date\_received} & date & 87.8\% & ISO-formatted date when the sample was received by the lab. \\[0.4em]
-\fieldname{date\_collected} & date & 74.7\% & ISO-formatted date when the sample was collected from the production facility. \\[0.4em]
-\fieldname{total\_thc} & float & 94.9\% & Analytical total of THC and THCA, in weight percent (\%). Calculated as $\Delta$9-THC + (THCA $\times$ 0.877). \\[0.4em]
-\fieldname{total\_cbd} & float & 61.8\% & Analytical total of CBD and CBDA, in weight percent (\%). Calculated as CBD + (CBDA $\times$ 0.877). \\[0.4em]
-\fieldname{total\_cannabinoids} & float & 95.0\% & Sum of all cannabinoids detected, in weight percent (\%). \\[0.4em]
-\fieldname{total\_terpenes} & float & 68.6\% & Sum of all terpenes detected, in weight percent (\%). \\[0.4em]
-\fieldname{status} & string & 99.5\% & Overall pass/fail status for all contaminant screening analyses. Values: \texttt{pass}, \texttt{fail}, \texttt{nt} (not tested). \\[0.4em]
-\fieldname{pesticides\_status} & string & 54.1\% & Pass/fail status for the pesticide residue analysis. \\[0.4em]
-\fieldname{heavy\_metals\_status} & string & 72.3\% & Pass/fail status for the heavy metals analysis. \\[0.4em]
-\fieldname{microbials\_status} & string & 81.1\% & Pass/fail status for the microbial contaminant analysis. \\[0.4em]
-\fieldname{residual\_solvents\_status} & string & 33.1\% & Pass/fail status for the residual solvents analysis. \\[0.4em]
-\fieldname{moisture\_content} & float & 30.3\% & Moisture content of the sample in weight percent (\%). \\[0.4em]
-\fieldname{water\_activity} & float & 29.5\% & Water activity ($a_W$) of the sample (dimensionless, 0.0--1.0). \\[0.4em]
+\fieldname{product\_name} & string & 97.9\% & The commercial name of the product as printed on the COA. \\[0.4em]
+\fieldname{strain\_name} & string & 57.8\% & A strain or cultivar name, if specified. May be parsed from \texttt{product\_name} when not explicitly stated. \\[0.4em]
+\fieldname{product\_type} & string & 99.7\% & Standardized product category. One of: \texttt{flower}, \texttt{preroll}, \texttt{infused}, \texttt{concentrate}, \texttt{vape}, \texttt{edible}, \texttt{tincture}, \texttt{topical}. \\[0.4em]
+\fieldname{batch\_number} & string & 97.7\% & The manufacturer batch or lot number for the sampled product. \\[0.4em]
+\fieldname{batch\_size} & float & 45.3\% & The total batch size in grams, if reported on the COA. \\[0.4em]
+\fieldname{sample\_weight} & float & 48.2\% & The weight of the laboratory sample in grams. \\[0.4em]
+\fieldname{producer} & string & 93.7\% & The name of the licensed producer (cultivator or manufacturer). \\[0.4em]
+\fieldname{producer\_street} & string & 33.7\% & Street address of the producer facility. \\[0.4em]
+\fieldname{producer\_city} & string & 35.8\% & City of the producer facility. \\[0.4em]
+\fieldname{producer\_state} & string & 44.8\% & State of the producer facility (two-letter code). \\[0.4em]
+\fieldname{producer\_zipcode} & string & 41.8\% & ZIP code of the producer facility. \\[0.4em]
+\fieldname{producer\_license\_number} & string & 37.7\% & The state-issued license number for the producer. \\[0.4em]
+\fieldname{distributor} & string & 25.2\% & The name of the product distributor, if applicable. \\[0.4em]
+\fieldname{distributor\_license\_number} & string & 17.3\% & The state-issued license number for the distributor, if applicable. \\[0.4em]
+\fieldname{lab} & string & 98.6\% & The name of the testing laboratory that performed the analyses. \\[0.4em]
+\fieldname{lab\_license\_number} & string & 90.6\% & The state-issued license number for the testing laboratory. \\[0.4em]
+\fieldname{lab\_address} & string & 96.2\% & Full street address of the testing laboratory. \\[0.4em]
+\fieldname{lab\_city} & string & 95.2\% & City of the testing laboratory. \\[0.4em]
+\fieldname{lab\_state} & string & 96.4\% & State of the testing laboratory (two-letter code). \\[0.4em]
+\fieldname{lab\_zipcode} & string & 93.8\% & ZIP code of the testing laboratory. \\[0.4em]
+\fieldname{date\_tested} & date & 89.0\% & ISO-formatted date when laboratory analysis was completed (\texttt{YYYY-MM-DD}). \\[0.4em]
+\fieldname{date\_received} & date & 92.9\% & ISO-formatted date when the sample was received by the lab. \\[0.4em]
+\fieldname{date\_collected} & date & 79.5\% & ISO-formatted date when the sample was collected from the production facility. \\[0.4em]
+\fieldname{total\_thc} & float & 95.3\% & Analytical total of THC and THCA, in weight percent (\%). Calculated as $\Delta$9-THC + (THCA $\times$ 0.877). \\[0.4em]
+\fieldname{total\_cbd} & float & 51.8\% & Analytical total of CBD and CBDA, in weight percent (\%). Calculated as CBD + (CBDA $\times$ 0.877). \\[0.4em]
+\fieldname{total\_cannabinoids} & float & 82.0\% & Sum of all cannabinoids detected, in weight percent (\%). \\[0.4em]
+\fieldname{total\_terpenes} & float & 70.7\% & Sum of all terpenes detected, in weight percent (\%). \\[0.4em]
+\fieldname{status} & string & 99.6\% & Overall pass/fail status for all contaminant screening analyses. Values: \texttt{pass}, \texttt{fail}, \texttt{nt} (not tested). \\[0.4em]
+\fieldname{pesticides\_status} & string & 68.4\% & Pass/fail status for the pesticide residue analysis. \\[0.4em]
+\fieldname{heavy\_metals\_status} & string & 48.7\% & Pass/fail status for the heavy metals analysis. \\[0.4em]
+\fieldname{microbials\_status} & string & 52.6\% & Pass/fail status for the microbial contaminant analysis. \\[0.4em]
+\fieldname{residual\_solvents\_status} & string & 25.1\% & Pass/fail status for the residual solvents analysis. \\[0.4em]
+\fieldname{moisture\_content} & float & 14.9\% & Moisture content of the sample in weight percent (\%). \\[0.4em]
+\fieldname{water\_activity} & float & 13.8\% & Water activity ($a_W$) of the sample (dimensionless, 0.0--1.0). \\[0.4em]
 \fieldname{analyses} & list & 100.0\% & JSON list of analysis types performed on the sample (e.g., \texttt{["cannabinoids", "terpenes", "pesticides"]}). \\[0.4em]
 \fieldname{results} & list & 100.0\% & JSON list of individual analyte measurements. See \textbf{Table~2} for the result detail schema. \\[0.4em]
-\fieldname{parsing\_model} & string & 100.0\% & The AI model used to parse the COA (e.g., \texttt{gpt-4o-mini}, \texttt{gpt-4.1-nano}). \\[0.4em]
+\fieldname{parsing\_model} & string & 49.9\% & The AI model used to parse the COA (e.g., \texttt{gpt-4o-mini}, \texttt{gpt-4.1-nano}). \\[0.4em]
 \fieldname{parsing\_cost} & float & 100.0\% & Estimated API cost in USD incurred to parse this COA. \\[0.4em]
 \fieldname{date\_aggregated} & date & 100.0\% & ISO-formatted date when the record was aggregated into the build file by \texttt{agg\_results.py}. \\[0.4em]
 \fieldname{completeness} & string & 99.9\% & Data completeness tier assigned by \texttt{qc\_results.py}. Values: \texttt{high}, \texttt{medium}, \texttt{low}, or empty. \\
