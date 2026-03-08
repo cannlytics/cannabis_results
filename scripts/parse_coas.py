@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Cannlytics
 Authors:
     Keegan Skeate <https://github.com/keeganskeate>
 Created: 10/7/2024
-Updated: 3/5/2026
+Updated: 3/7/2026
 License: MIT License <https://github.com/cannlytics/cannlytics/blob/main/LICENSE>
 
 Description:
@@ -127,6 +127,165 @@ def _safe_file_size(path: str, min_size: int = 21_000) -> bool:
         return os.path.getsize(_long_path(path)) >= min_size
     except (OSError, FileNotFoundError):
         return False
+
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║ PDF Validity Detection                                           ║
+# ╚══════════════════════════════════════════════════════════════════╝
+
+# Minimum file size (bytes) for a valid COA PDF. Real COA PDFs are
+# typically 50KB+ (even minimal single-page COAs). Files smaller
+# than this threshold are almost certainly placeholders, error
+# pages, or truncated downloads.
+MIN_VALID_PDF_SIZE = 1_024  # 1 KB
+
+
+def is_valid_pdf(path: str) -> Tuple[bool, str]:
+    """Fast structural validation of a PDF file.
+
+    Performs four progressively more expensive checks:
+
+      1. **Header check** (~0.01ms): Read the first 5 bytes and
+         verify the ``%PDF-`` magic number. Files that are HTML error
+         pages, empty files, or non-PDF binaries fail here instantly.
+         This catches ~95% of invalid files (e.g., Curaleaf 404 pages
+         saved as .pdf, Cloudflare challenge pages, Reddit HTML).
+      2. **Size check** (~0.01ms): Reject files below
+         ``MIN_VALID_PDF_SIZE`` (1 KB). Real COA PDFs are 50KB+.
+      3. **Structure check** (~1-5ms): Open with ``pdfplumber`` and
+         verify the PDF has at least one page. Catches files with a
+         valid header but a corrupted internal structure (missing
+         /Root object, broken xref table, etc.).
+      4. **Content access check** (~5-20ms): Attempt to extract text
+         from page 1 AND render the page dimensions. Some PDFs have
+         enough structure for ``pdfplumber.open()`` to succeed (lazy
+         loading) but corrupt internal page objects that fail when
+         actually accessed. This catches "valid shell, corrupt
+         content" PDFs that would otherwise waste API calls.
+
+    This function is designed to be called once per PDF and the
+    result cached permanently via ``InvalidPDFCache``.
+
+    Args:
+        path: Filesystem path to the PDF file.
+
+    Returns:
+        Tuple of (is_valid, reason). ``reason`` is an empty string
+        if valid, or a short diagnostic string if invalid:
+        ``'not_pdf_header'``, ``'too_small'``, ``'empty_file'``,
+        ``'no_pages'``, ``'corrupt'``, ``'corrupt_pages'``,
+        ``'unreadable'``.
+    """
+    safe_path = _long_path(path)
+
+    # ── Check 1: File existence and size ──────────────────────
+    try:
+        file_size = os.path.getsize(safe_path)
+    except (OSError, FileNotFoundError):
+        return False, 'unreadable'
+
+    if file_size == 0:
+        return False, 'empty_file'
+
+    if file_size < MIN_VALID_PDF_SIZE:
+        return False, 'too_small'
+
+    # ── Check 2: PDF magic number ─────────────────────────────
+    try:
+        with open(safe_path, 'rb') as f:
+            header = f.read(5)
+    except (OSError, PermissionError):
+        return False, 'unreadable'
+
+    if header != b'%PDF-':
+        return False, 'not_pdf_header'
+
+    # ── Check 3: Structural integrity via pdfplumber ──────────
+    try:
+        with pdfplumber.open(safe_path) as pdf:
+            if not pdf.pages:
+                return False, 'no_pages'
+
+            # ── Check 4: Page content accessibility ───────────
+            # Some PDFs pass open() via lazy loading but have
+            # corrupt page objects. Try to actually read page 1.
+            # This catches the "No /Root object" errors that
+            # only surface when accessing page content, as well
+            # as corrupt xref tables, missing stream data, etc.
+            try:
+                page = pdf.pages[0]
+                # Access page dimensions (very fast, tests object tree).
+                _ = page.width
+                _ = page.height
+                # Try text extraction (tests content streams).
+                # Returns '' for image-only PDFs — that's fine.
+                _ = page.extract_text()
+            except Exception:
+                return False, 'corrupt_pages'
+
+    except Exception:
+        return False, 'corrupt'
+
+    return True, ''
+
+
+class InvalidPDFCache:
+    """Persistent set of known-invalid PDF hashes.
+
+    Stores one SHA-256 hash per line in a plain text file. This is
+    deliberately simpler than the JSONL caches used for parse results
+    because we only need to answer the question "is this hash known
+    to be invalid?" as fast as possible.
+
+    The file is human-readable and diffable, which is useful for
+    auditing. It's also appendable — new entries are flushed to disk
+    immediately so progress is never lost on interruption.
+
+    Thread safety: Not required (single-threaded pipeline).
+    """
+
+    def __init__(self, cache_path: str):
+        self.path = Path(cache_path)
+        self._hashes: set = set()
+        self._file_handle = None
+        self._load()
+
+    def _load(self):
+        """Load existing invalid hashes from disk."""
+        if self.path.exists():
+            with open(self.path, 'r') as f:
+                for line in f:
+                    h = line.strip()
+                    if h and not h.startswith('#'):
+                        self._hashes.add(h)
+
+    def __contains__(self, pdf_hash: str) -> bool:
+        return pdf_hash in self._hashes
+
+    def __len__(self) -> int:
+        return len(self._hashes)
+
+    def add(self, pdf_hash: str, reason: str = ''):
+        """Add an invalid hash and flush to disk immediately."""
+        if pdf_hash in self._hashes:
+            return
+        self._hashes.add(pdf_hash)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.path, 'a') as f:
+            f.write(f'{pdf_hash}\n')
+
+    def remove(self, pdf_hash: str):
+        """Remove a hash (e.g., after re-downloading a valid copy)."""
+        self._hashes.discard(pdf_hash)
+        self._rewrite()
+
+    def _rewrite(self):
+        """Rewrite the file from the in-memory set."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.path, 'w') as f:
+            f.write(f'# Invalid PDF hashes — generated by parse_coas.py\n')
+            for h in sorted(self._hashes):
+                f.write(f'{h}\n')
 
 
 # ╔══════════════════════════════════════════════════════════════════╗
@@ -1937,6 +2096,15 @@ class COAParser:
         self._algorithm_cache: Dict[str, Optional[Callable]] = {}
         self._algo_stats = {'identified': 0, 'parsed': 0, 'failed': 0, 'ai_fallback': 0}
 
+        # Invalid PDF cache — persistent set of known-bad hashes.
+        # This prevents re-attempting corrupted/non-PDF files on
+        # subsequent runs. Common in AZ (Curaleaf HTML error pages),
+        # NY (Reddit-sourced files), and other corpora.
+        self.invalid_pdf_cache = InvalidPDFCache(
+            str(self.cache_dir / f'invalid-pdfs-{self.state}.txt')
+        )
+        self._invalid_count = 0  # Count for this run.
+
     @property
     def pdf_dir(self) -> Path:
         """Get the PDF directory for this state."""
@@ -2061,6 +2229,8 @@ class COAParser:
             'total_pdfs': total,
             'parsed': parsed_count,
             'skipped': skipped_count,
+            'invalid_pdfs': self._invalid_count,
+            'invalid_pdfs_total': len(self.invalid_pdf_cache),
             'errors': error_count,
             'costs': self.cost_tracker.summary(),
             'flex_enabled': self.ai_client.use_flex if self.ai_client else False,
@@ -2070,7 +2240,9 @@ class COAParser:
         algo = self._algo_stats
         self.logger.info(
             f'Parse complete. Parsed: {parsed_count}, '
-            f'Skipped: {skipped_count}, Errors: {error_count}. '
+            f'Skipped: {skipped_count}, Errors: {error_count}, '
+            f'Invalid: {self._invalid_count} (this run), '
+            f'{len(self.invalid_pdf_cache)} (total cached). '
             f'Cost: ${self.cost_tracker.total_cost:.4f}. '
             f'Algorithm: {algo["parsed"]} parsed, {algo["identified"]} identified, '
             f'{algo["failed"]} failed, {algo["ai_fallback"]} AI fallback.'
@@ -2104,6 +2276,34 @@ class COAParser:
 
         Returns 'parsed', 'skipped', or 'algorithm_parsed'.
         """
+        # ── PRE-FLIGHT: Invalid PDF detection ─────────────────────
+        # Check the persistent cache first (O(1) set lookup), then
+        # validate structurally if this is a first-time encounter.
+        # Catches: HTML error pages saved as .pdf (Curaleaf, Reddit),
+        # corrupted downloads, empty placeholders, truncated files,
+        # and PDFs with valid headers but corrupt internal structure.
+        if pdf_hash in self.invalid_pdf_cache:
+            self._invalid_count += 1
+            # Log the first few, then go quiet to avoid spam.
+            if self._invalid_count <= 5:
+                self.logger.info(f'Skipped (cached invalid PDF)')
+            elif self._invalid_count == 6:
+                self.logger.info(
+                    f'Skipped (cached invalid PDF) — '
+                    f'suppressing further invalid messages'
+                )
+            return 'skipped'
+
+        valid, reason = is_valid_pdf(file_path)
+        if not valid:
+            self.invalid_pdf_cache.add(pdf_hash, reason)
+            self._invalid_count += 1
+            self.logger.info(
+                f'Invalid PDF detected ({reason}): '
+                f'{os.path.basename(file_path)}'
+            )
+            return 'skipped'
+
         # ── HYBRID ROUTING: Try algorithmic parsing first ─────────
         if self.method in ('auto', 'algorithm'):
             algo_result = self._try_algorithmic_parse(
@@ -2680,6 +2880,7 @@ class COAParser:
             'provider': self.ai_client.provider if self.ai_client else 'local',
             'algorithm_records': len(self.algo_results_cache.to_df()),
             'metadata': len(self.metadata_cache.to_df()),
+            'invalid_pdfs': len(self.invalid_pdf_cache),
         }
         for analysis_name, cache in self.analysis_caches.items():
             df = cache.to_df()
@@ -2785,6 +2986,11 @@ Provider Priority: anthropic > openai > gemini > xai
         '--clear-cache', action='store_true',
         help='Delete all cache files for this state/model and exit',
     )
+    parser.add_argument(
+        '--triage', action='store_true',
+        help='Scan corpus for invalid PDFs, report stats, and exit. '
+             'Populates the invalid PDF cache for future runs.',
+    )
 
     args = parser.parse_args()
 
@@ -2826,8 +3032,10 @@ Provider Priority: anthropic > openai > gemini > xai
             # Show what's already cached.
             stats = coa_parser.get_cache_stats()
             cached = stats.get('metadata', 0)
-            remaining = len(pdfs) - cached
+            invalid = stats.get('invalid_pdfs', 0)
+            remaining = len(pdfs) - cached - invalid
             print(f'  Already cached: {cached:,}')
+            print(f'  Known invalid: {invalid:,}')
             print(f'  Remaining: {remaining:,}')
         return
 
@@ -2848,6 +3056,69 @@ Provider Priority: anthropic > openai > gemini > xai
             print(f'  Cleared {len(cache_files)} cache file(s).')
         return
 
+    if args.triage:
+        print(f'\n🔍 PDF Corpus Triage: {args.state.upper()}')
+        print(f'   Cache: {coa_parser.invalid_pdf_cache.path}')
+        print(f'   Previously cached invalid: {len(coa_parser.invalid_pdf_cache):,}')
+        print()
+
+        pdfs = coa_parser.discover_pdfs(args.source)
+        if pdfs.empty:
+            print('  No PDFs found.')
+            return
+
+        total = len(pdfs)
+        print(f'  Scanning {total:,} PDFs...')
+
+        valid_count = 0
+        invalid_counts = {}  # reason -> count
+        already_cached = 0
+        newly_invalid = 0
+
+        for i, (_, row) in enumerate(pdfs.iterrows()):
+            pdf_hash = row['pdf_hash']
+            file_path = row['file_path']
+
+            # Check cache first.
+            if pdf_hash in coa_parser.invalid_pdf_cache:
+                already_cached += 1
+                invalid_counts['cached'] = invalid_counts.get('cached', 0) + 1
+                continue
+
+            valid, reason = is_valid_pdf(file_path)
+            if valid:
+                valid_count += 1
+            else:
+                coa_parser.invalid_pdf_cache.add(pdf_hash, reason)
+                newly_invalid += 1
+                invalid_counts[reason] = invalid_counts.get(reason, 0) + 1
+
+            if (i + 1) % 5000 == 0:
+                print(
+                    f'    [{i + 1:,}/{total:,}] '
+                    f'valid={valid_count:,}, '
+                    f'invalid={already_cached + newly_invalid:,}'
+                )
+
+        total_invalid = already_cached + newly_invalid
+        print()
+        print(f'  ═══════════════════════════════════════')
+        print(f'  TRIAGE RESULTS: {args.state.upper()}')
+        print(f'  ═══════════════════════════════════════')
+        print(f'  Total PDFs scanned:   {total:,}')
+        print(f'  Valid:                {valid_count:,} ({100*valid_count/total:.1f}%)')
+        print(f'  Invalid:              {total_invalid:,} ({100*total_invalid/total:.1f}%)')
+        if invalid_counts:
+            print(f'  --- Breakdown ---')
+            for reason, count in sorted(invalid_counts.items(),
+                                         key=lambda x: -x[1]):
+                print(f'    {reason}: {count:,}')
+        print(f'  Newly cached:         {newly_invalid:,}')
+        print(f'  Previously cached:    {already_cached:,}')
+        print(f'  Total in cache:       {len(coa_parser.invalid_pdf_cache):,}')
+        print(f'  ═══════════════════════════════════════')
+        return
+
     # Run parsing.
     print(f'\n🔬 Cannlytics COA Doc — Hybrid Parser')
     print(f'   State: {args.state.upper()}')
@@ -2863,6 +3134,8 @@ Provider Priority: anthropic > openai > gemini > xai
         print(f'   Budget: ${args.budget:.2f}')
     if args.max_parses:
         print(f'   Max parses: {args.max_parses:,}')
+    if len(coa_parser.invalid_pdf_cache) > 0:
+        print(f'   Invalid PDFs cached: {len(coa_parser.invalid_pdf_cache):,} (will be skipped)')
     print()
 
     summary = coa_parser.parse_all(
@@ -2881,6 +3154,10 @@ Provider Priority: anthropic > openai > gemini > xai
     print(f'  Parsed: {summary["parsed"]:,}')
     print(f'  Skipped (cached): {summary["skipped"]:,}')
     print(f'  Errors: {summary["errors"]:,}')
+    invalid_run = summary.get('invalid_pdfs', 0)
+    invalid_total = summary.get('invalid_pdfs_total', 0)
+    if invalid_run > 0 or invalid_total > 0:
+        print(f'  Invalid PDFs: {invalid_run:,} (this run), {invalid_total:,} (total cached)')
     algo = summary.get('algorithm_stats', {})
     if algo.get('identified', 0) > 0 or algo.get('parsed', 0) > 0:
         print(f'  --- Algorithm Stats ---')
