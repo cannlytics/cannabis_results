@@ -210,8 +210,11 @@ python scripts/parse_coas.py --state fl --max-parses 500
 python scripts/parse_coas.py --state ca --max-parses 500
 
 # Stage 2.5: QR scanning (optional)
-python scripts/scan_qrcodes.py --state fl
+python scripts/scan_qrcodes.py --state az
 python scripts/scan_qrcodes.py --state ca
+python scripts/scan_qrcodes.py --state fl
+python scripts/scan_qrcodes.py --state ny
+python scripts/scan_qrcodes.py --state mo
 
 # Stages 3-7: Build pipeline
 python scripts/agg_results.py

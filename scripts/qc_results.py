@@ -5,17 +5,18 @@ Copyright (c) 2024-2026 Cannlytics
 Authors:
     Keegan Skeate <https://github.com/keeganskeate>
 Created: 2026-03-02
-Updated: 2026-03-02
+Updated: 2026-03-08
 License: MIT
 
 Description:
     Quality control and validation for the cannabis results build file.
-    Runs 18 rules: string cleanup, product/strain normalization, date
-    formatting, status normalization, numeric range validation, producer
-    and lab name cleaning, license number formatting, state/zip validation,
-    address cleaning, deduplication, analysis name normalization, results
-    JSON validation, cross-field consistency checks, and completeness
-    scoring. Every transformation is logged; the script is idempotent.
+    Runs 18 rules: string cleanup (with bracket artifact stripping),
+    product/strain normalization, date formatting, status normalization,
+    numeric range validation, producer and lab name cleaning, license
+    number formatting, state/zip validation, address cleaning,
+    deduplication, analysis name normalization, results JSON validation,
+    cross-field consistency checks, and completeness scoring. Every
+    transformation is logged; the script is idempotent.
 
 Pipeline Position:
     Stage 2 of 4 -- Quality control
@@ -122,11 +123,18 @@ _PRODUCT_TYPES = {
         'trim', 'shake', 'plant material', 'biomass', 'raw plant material',
         'whole wet plant', 'usable marijuana', 'usable cannabis',
         'cannabis plant material',
+        # Non-canonical variants from validation (March 7, 2026):
+        'plant',                      # 87 records
+        'flower, inhalable',          # 15 records
+        'flower, medical inhalable',  # 1 record
     ],
     'preroll': [
         'preroll', 'pre-roll', 'pre roll', 'joint', 'blunt',
         'prerolls', 'pre-rolls', 'infused preroll', 'infused pre-roll',
         'enhanced preroll', 'moon rock', 'moonrock',
+        # Non-canonical variants from validation (March 7, 2026):
+        'infused flower/pre-roll',    # 5 records
+        'pre-roll cannabis',          # 2 records
     ],
     'concentrate': [
         'concentrate', 'extract', 'wax', 'shatter', 'rosin',
@@ -134,6 +142,10 @@ _PRODUCT_TYPES = {
         'sugar', 'crumble', 'hash', 'kief', 'distillate', 'rso',
         'live rosin', 'cured resin', 'resin', 'dab', 'dabs',
         'non-solvent concentrate', 'solvent based concentrate',
+        # Non-canonical variants from validation (March 7, 2026):
+        'derivative',                       # 4,488 records
+        'concentrates & extracts',          # 322 records
+        'concentrate, product inhalable',   # 100 records
     ],
     'vape': [
         'vape', 'cartridge', 'cart', 'vaporizer', 'pod',
@@ -145,6 +157,10 @@ _PRODUCT_TYPES = {
         'candy', 'baked goods', 'capsule', 'tablet', 'ingestible',
         'infused edible', 'food', 'drink', 'lozenge', 'hard candy',
         'infused non-edible',
+        # Non-canonical variants from validation (March 7, 2026):
+        'infused',                    # 64 records
+        'infused, solid edible',      # 9 records
+        'infused, liquid edible',     # 1 record
     ],
     'tincture': [
         'tincture', 'oil', 'drops', 'sublingual', 'oral solution',
@@ -153,6 +169,8 @@ _PRODUCT_TYPES = {
     'topical': [
         'topical', 'cream', 'lotion', 'balm', 'salve',
         'transdermal', 'patch', 'ointment', 'topicals',
+        # Non-canonical variants from validation (March 7, 2026):
+        'infused, non-inhalable',     # 1 record
     ],
 }
 for canonical, variants in _PRODUCT_TYPES.items():
@@ -165,6 +183,8 @@ STATUS_MAP: Dict[str, str] = {
     'p': 'pass', 'compliant': 'pass', 'yes': 'pass',
     'true': 'pass', '1': 'pass',
     'complete': 'pass', 'completed': 'pass',
+    'final': 'pass', 'finalized': 'pass',
+    'approved': 'pass', 'accepted': 'pass',
     'fail': 'fail', 'failed': 'fail', 'failing': 'fail',
     'f': 'fail', 'non-compliant': 'fail', 'no': 'fail',
     'false': 'fail', '0': 'fail',
@@ -253,6 +273,15 @@ ANALYSIS_NAME_NORMALIZATION: Dict[str, str] = {
     'residual_solvents': 'residual_solvents', 'residual solvents': 'residual_solvents',
     'solvents': 'residual_solvents', 'residual solvent analysis': 'residual_solvents',
     'residual solvent': 'residual_solvents', 'residue_solvents': 'residual_solvents',
+    # ── Non-canonical residual solvents variants (March 7, 2026) ──
+    'residue solvents': 'residual_solvents',
+    'residual solvents analysis': 'residual_solvents',
+    'residual_solvents_analysis': 'residual_solvents',
+    'residual solvents testing': 'residual_solvents',
+    'residual_solvents_testing': 'residual_solvents',
+    'solvent analysis': 'residual_solvents', 'solvent_analysis': 'residual_solvents',
+    'solvent testing': 'residual_solvents', 'solvent_testing': 'residual_solvents',
+    'solvents analysis': 'residual_solvents', 'solvents_analysis': 'residual_solvents',
     # ── Moisture / Foreign Matter ─────────────────────────────────
     'moisture_foreign_matter': 'moisture_foreign_matter',
     'moisture': 'moisture_foreign_matter', 'moisture content': 'moisture_foreign_matter',
@@ -294,6 +323,13 @@ ANALYSIS_NAME_NORMALIZATION: Dict[str, str] = {
     # ── Screen / Method suffixes ──────────────────────────────────
     'heavy_metals_screen': 'heavy_metals', 'heavy metals screen': 'heavy_metals',
     'heavy_metals_by_icpms': 'heavy_metals',
+    # ── Non-canonical heavy metals variants (March 7, 2026) ───────
+    'heavy metals icpms': 'heavy_metals', 'heavy metals icp-ms': 'heavy_metals',
+    'heavy_metals_icpms': 'heavy_metals', 'heavy_metals_icp_ms': 'heavy_metals',
+    'heavy metals analysis': 'heavy_metals', 'heavy_metals_analysis': 'heavy_metals',
+    'heavy metals testing': 'heavy_metals', 'heavy_metals_testing': 'heavy_metals',
+    'metals testing': 'heavy_metals', 'metals analysis': 'heavy_metals',
+    'metals_testing': 'heavy_metals', 'metals_analysis': 'heavy_metals',
     'pesticides_screen': 'pesticides', 'pesticides screen': 'pesticides',
     'pesticides_by_lcmsms': 'pesticides',
     'pesticides, fungicides, and growth regulators': 'pesticides',
@@ -301,6 +337,17 @@ ANALYSIS_NAME_NORMALIZATION: Dict[str, str] = {
     'pesticides_fungicides_and_growth_regulators': 'pesticides',
     'pesticides_fungicides_growth_regulators': 'pesticides',
     'growth regulators': 'pesticides',
+    # ── Non-canonical pesticide variants (March 7, 2026) ──────────
+    'pesticides lc': 'pesticides', 'pesticides_lc': 'pesticides',
+    'pesticides gc': 'pesticides', 'pesticides_gc': 'pesticides',
+    'pesticides lcms': 'pesticides', 'pesticides_lcms': 'pesticides',
+    'pesticides gcms': 'pesticides', 'pesticides_gcms': 'pesticides',
+    'pesticides lc/ms': 'pesticides', 'pesticides gc/ms': 'pesticides',
+    'pesticides - lc': 'pesticides', 'pesticides - gc': 'pesticides',
+    'pesticide analysis': 'pesticides', 'pesticide_analysis': 'pesticides',
+    'pesticides analysis': 'pesticides', 'pesticides_analysis': 'pesticides',
+    'pesticide testing': 'pesticides', 'pesticide_testing': 'pesticides',
+    'pest': 'pesticides',
     'mycotoxins_screen': 'microbials', 'mycotoxins screen': 'microbials',
     'mycotoxins_by_lcmsms': 'microbials',
     'microbiological_screen': 'microbials', 'microbiological screen': 'microbials',
@@ -310,13 +357,23 @@ ANALYSIS_NAME_NORMALIZATION: Dict[str, str] = {
     'aflatoxins': 'microbials',
     'pathogenic testing': 'microbials', 'pathogenic_testing': 'microbials',
     'pathogenic moisture': 'microbials',
+    # ── Non-canonical microbial variants (March 7, 2026) ──────────
+    'microbial impurities - mdg': 'microbials',
+    'microbial impurities - mg': 'microbials',
+    'microbial impurities mdg': 'microbials',
+    'micro': 'microbials', 'micro impurities': 'microbials',
+    'microbial testing': 'microbials', 'microbial_testing': 'microbials',
+    'microbiology analysis': 'microbials', 'microbiology_analysis': 'microbials',
+    'mycotoxin testing': 'microbials', 'mycotoxin_testing': 'microbials',
+    'total viable aerobic bacteria': 'microbials',
+    'total coliforms': 'microbials', 'bile tolerant gram neg': 'microbials',
+    'bile-tolerant gram-negative': 'microbials',
     # ── Additional catch-all variants ─────────────────────────────
     'filth': 'moisture_foreign_matter',
     'filth_and_foreign_matter': 'moisture_foreign_matter',
     'moisture meter': 'moisture_foreign_matter',
     'cannabinoids potency': 'cannabinoids',
     'cannabinoid_potency': 'cannabinoids',
-    'residue solvents': 'residual_solvents',
 }
 
 # Date formats to try when parsing.
@@ -571,7 +628,7 @@ def _normalize_analyses_list(analyses_raw: Any) -> List[str]:
 # =============================================================================
 
 def clean_string_fields(df: pd.DataFrame, report: QCReport) -> pd.DataFrame:
-    """Rule 1: Clean whitespace, sentinels, and unicode in string fields."""
+    """Rule 1: Clean whitespace, sentinels, unicode, and bracket artifacts in string fields."""
     rule = 'String whitespace & sentinels'
     found = 0
     fixed = 0
@@ -583,6 +640,9 @@ def clean_string_fields(df: pd.DataFrame, report: QCReport) -> pd.DataFrame:
         cleaned = cleaned.str.strip()
         cleaned = cleaned.apply(_clean_unicode)
         cleaned = cleaned.str.replace(r'\s+', ' ', regex=True)
+        # Strip stray bracket artifacts (e.g., "[value]", "value]", "[value").
+        cleaned = cleaned.str.replace(r'^\[|\]$', '', regex=True)
+        cleaned = cleaned.str.strip()
         sentinel_mask = cleaned.str.lower().isin(SENTINEL_VALUES)
         cleaned = cleaned.where(~sentinel_mask, '')
         changed = (original.fillna('').astype(str) != cleaned)
