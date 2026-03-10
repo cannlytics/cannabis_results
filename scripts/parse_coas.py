@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Cannlytics
 Authors:
     Keegan Skeate <https://github.com/keeganskeate>
 Created: 10/7/2024
-Updated: 3/7/2026
+Updated: 3/9/2026
 License: MIT License <https://github.com/cannlytics/cannlytics/blob/main/LICENSE>
 
 Description:
@@ -301,6 +301,26 @@ try:
         LabTestResult,
         normalize_product_type,
     )
+    from config.results_config import (
+        AI_PROVIDERS,
+        ANALYSIS_SKIP_RULES,
+        FLEX_COST_MULTIPLIER,
+        FLEX_TIMEOUT,
+        STATE_NAMES,
+        PATHS as _PATHS,
+    )
+    from config.lab_registry import LAB_REGISTRY
+    from config.coa_prompts import (
+        METADATA_SYSTEM_PROMPT,
+        METADATA_USER_PROMPT,
+        ANALYSIS_SYSTEM_PROMPT,
+        ANALYSIS_USER_PROMPT,
+        SINGLE_PAGE_SYSTEM_PROMPT,
+        SINGLE_PAGE_USER_PROMPT,
+    )
+    DEFAULT_DATA_DIR = _PATHS.data_dir
+    DEFAULT_CACHE_DIR = _PATHS.cache_dir
+    DEFAULT_LOG_DIR = _PATHS.log_dir
 except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from config.results_schema import (
@@ -310,344 +330,28 @@ except ImportError:
         LabTestResult,
         normalize_product_type,
     )
-
-
-# ── AI Provider Pricing (per 1M tokens) ───────────────────────────
-
-AI_PROVIDERS = {
-    'anthropic': {
-        'name': 'Anthropic Claude',
-        'models': {
-            'claude-sonnet-4-5-20250929': {
-                'input': 3.00, 'output': 15.00,
-                'supports_pdf': True, 'supports_images': True,
-                'supports_structured_output': False,
-                'max_output_tokens': 64_000,
-            },
-            'claude-haiku-4-5-20251001': {
-                'input': 1.00, 'output': 5.00,
-                'supports_pdf': True, 'supports_images': True,
-                'supports_structured_output': False,
-                'max_output_tokens': 64_000,
-            },
-        },
-        'default_model': 'claude-haiku-4-5-20251001',
-        'env_key': 'ANTHROPIC_API_KEY',
-        'priority': 1,
-        'free_tier': False,
-    },
-    'openai': {
-        'name': 'OpenAI',
-        'models': {
-            'gpt-5-mini': {
-                'input': 0.25, 'output': 2.00,
-                'supports_pdf': True, 'supports_images': True,
-                'supports_structured_output': True,
-                'max_output_tokens': 16_384,
-                'image_cost': 0.003825,
-            },
-            'gpt-5-nano': {
-                'input': 0.05, 'output': 0.40,
-                'supports_pdf': True, 'supports_images': True,
-                'supports_structured_output': True,
-                'max_output_tokens': 16_384,
-                'image_cost': 0.001275,
-            },
-            'gpt-5': {
-                'input': 1.25, 'output': 10.00,
-                'supports_pdf': True, 'supports_images': True,
-                'supports_structured_output': True,
-                'max_output_tokens': 32_768,
-                'image_cost': 0.003825,
-            },
-        },
-        'default_model': 'gpt-5-nano',
-        'env_key': 'OPENAI_API_KEY',
-        'priority': 2,
-        'free_tier': False,
-    },
-    'gemini': {
-        'name': 'Google Gemini',
-        'models': {
-            'gemini-2.5-flash': {
-                'input': 0.30, 'output': 2.50,
-                'supports_pdf': True, 'supports_images': True,
-                'supports_structured_output': True,
-                'max_output_tokens': 65_536,
-                'free_tier_input': 0.0, 'free_tier_output': 0.0,
-            },
-            'gemini-2.5-pro': {
-                'input': 1.25, 'output': 10.00,
-                'supports_pdf': True, 'supports_images': True,
-                'supports_structured_output': True,
-                'max_output_tokens': 65_536,
-                'free_tier_input': 0.0, 'free_tier_output': 0.0,
-            },
-        },
-        'default_model': 'gemini-2.5-flash',
-        'env_key': 'GOOGLE_API_KEY',
-        'priority': 3,
-        'free_tier': True,
-    },
-    'xai': {
-        'name': 'xAI Grok',
-        'models': {
-            'grok-4-1-fast-non-reasoning': {
-                'input': 0.20, 'output': 0.50,
-                'supports_pdf': False, 'supports_images': True,
-                'supports_structured_output': True,
-                'max_output_tokens': 16_384,
-            },
-            'grok-3-mini': {
-                'input': 0.30, 'output': 0.50,
-                'supports_pdf': False, 'supports_images': True,
-                'supports_structured_output': True,
-                'max_output_tokens': 16_384,
-            },
-        },
-        'default_model': 'grok-4-1-fast-non-reasoning',
-        'env_key': 'XAI_API_KEY',
-        'priority': 4,
-        'free_tier': False,
-    },
-}
-
-# Default paths: prefer centralized config, fall back to env / hardcoded.
-try:
-    from config.results_config import PATHS as _PATHS
+    from config.results_config import (
+        AI_PROVIDERS,
+        ANALYSIS_SKIP_RULES,
+        FLEX_COST_MULTIPLIER,
+        FLEX_TIMEOUT,
+        STATE_NAMES,
+        PATHS as _PATHS,
+    )
+    from config.lab_registry import LAB_REGISTRY
+    from config.coa_prompts import (
+        METADATA_SYSTEM_PROMPT,
+        METADATA_USER_PROMPT,
+        ANALYSIS_SYSTEM_PROMPT,
+        ANALYSIS_USER_PROMPT,
+        SINGLE_PAGE_SYSTEM_PROMPT,
+        SINGLE_PAGE_USER_PROMPT,
+    )
     DEFAULT_DATA_DIR = _PATHS.data_dir
     DEFAULT_CACHE_DIR = _PATHS.cache_dir
     DEFAULT_LOG_DIR = _PATHS.log_dir
-except ImportError:
-    DEFAULT_DATA_DIR = Path(os.environ.get('CANNLYTICS_DATA_DIR', 'D:/data'))
-    DEFAULT_CACHE_DIR = Path(os.environ.get('CANNLYTICS_CACHE_DIR', 'D:/data/.cache'))
-    DEFAULT_LOG_DIR = Path(os.environ.get('CANNLYTICS_LOG_DIR', 'D:/data/.logs'))
-
-# State name mapping.
-STATE_NAMES = {
-    'ak': 'alaska', 'az': 'arizona', 'ca': 'california', 'co': 'colorado',
-    'ct': 'connecticut', 'fl': 'florida', 'hi': 'hawaii', 'ma': 'massachusetts',
-    'md': 'maryland', 'mi': 'michigan', 'mo': 'missouri', 'ms': 'mississippi',
-    'nj': 'new-jersey', 'nv': 'nevada', 'ny': 'new-york', 'oh': 'ohio',
-    'or': 'oregon', 'ri': 'rhode-island', 'ut': 'utah', 'vt': 'vermont',
-    'wa': 'washington',
-}
-
-# ── Bayesian Analysis Skip Rules ─────────────────────────────────
-# Product-type-specific priors for analyses that are known to be
-# unnecessary based on domain knowledge and observed zero-result
-# patterns. When metadata reveals the product type, we update our
-# beliefs about which analyses to parse — skipping those with a
-# near-zero prior probability of yielding results.
-#
-# Structure: {analysis_name: [product_types_to_skip]}
-# Rationale is documented per rule so future additions are traceable.
-ANALYSIS_SKIP_RULES = {
-    # Edibles are almost never tested for terpenes. Terpene
-    # profiles are irrelevant after decarboxylation / infusion.
-    # Observed: 100% zero-result rate for edibles (11/11 in CA).
-    'terpenes': ['edible'],
-}
-
-# ── Flex Processing Configuration ────────────────────────────────
-# OpenAI Flex processing provides 50% cost reduction (Batch API
-# rates) for synchronous requests with higher latency tolerance.
-# Supported for GPT-5 family models.
-FLEX_COST_MULTIPLIER = 0.5  # 50% discount on standard rates
-FLEX_TIMEOUT = 900.0  # 15 minutes (recommended by OpenAI docs)
 
 
-# ╔══════════════════════════════════════════════════════════════════╗
-# ║ COA Doc — Lab Registry & Algorithmic Routing                     ║
-# ╚══════════════════════════════════════════════════════════════════╝
-
-# The Lab Registry maps lab identifiers to their fingerprints,
-# algorithmic parser entry points, and operational metadata.
-# This is the routing table for COA Doc's hybrid architecture.
-#
-# Identification priority:
-#   1. URL presence in page 1 text (highest confidence)
-#   2. Lab/LIMS name presence in page 1 text
-#   3. QR code URL domain match (optional, requires qrustie)
-#
-# Each entry:
-#   - name:         Human-readable lab name
-#   - urls:         URL fragments to search for (case-sensitive)
-#   - text_patterns: Text strings to search for (case-insensitive)
-#   - module:       Python module name (for import)
-#   - algorithm:    Entry point function name
-#   - version:      Algorithm version string
-#   - states:       States where this lab operates
-#   - tier:         Validation tier (1=production, 2=beta, 3=alpha, 4=dev)
-#   - lims:         True if this is a LIMS (multi-lab), False if single lab
-#
-# To add a new lab:
-#   1. Add an entry to LAB_REGISTRY
-#   2. Place the algorithm module in algorithms/coa_parsers/{module}.py
-#      OR ensure cannlytics.data.coas.algorithms.{module} is importable
-#   3. Run the benchmarking suite to validate (Phase 4)
-
-LAB_REGISTRY: Dict[str, Dict[str, Any]] = {
-    'confidentcannabis': {
-        'name': 'Confident Cannabis',
-        'urls': ['confidentcannabis.com', 'confidentlims.com'],
-        'text_patterns': ['Confident Cannabis', 'Confident LIMS'],
-        'module': 'confidentcannabis',
-        'algorithm': 'parse_cc_coa',
-        'version': '1.0.0',
-        'states': ['az', 'ca', 'co', 'mo', 'ny', 'or', 'wa'],
-        'tier': 3,
-        'lims': True,
-    },
-    'tagleaf': {
-        'name': 'TagLeaf LIMS',
-        'urls': ['lims.tagleaf.com', 'tagleaf.com'],
-        'text_patterns': ['TagLeaf', 'lims.tagleaf'],
-        'module': 'tagleaf',
-        'algorithm': 'parse_tagleaf_coa',
-        'version': '1.0.0',
-        'states': ['ca', 'mo', 'ny', 'or',],
-        'tier': 3,
-        'lims': True,
-    },
-    'sclabs': {
-        'name': 'SC Labs',
-        'urls': ['client.sclabs.com', 'sclabs.com'],
-        'text_patterns': ['SC Labs', 'SC Laboratories'],
-        'module': 'sclabs',
-        'algorithm': 'parse_sc_labs_coa',
-        'version': '1.0.0',
-        'states': ['az', 'ca', 'or', 'co', 'mi'],
-        'tier': 3,
-        'lims': False,
-    },
-    'encore': {
-        'name': 'Encore Labs',
-        'urls': ['encorelabs.com', 'encore-labs.com'],
-        'text_patterns': ['Encore Labs'],
-        'module': 'encore',
-        'algorithm': 'parse_encore_coa',
-        'version': '2.0.0',
-        'states': ['ca', 'az'],
-        'tier': 2,
-        'lims': False,
-    },
-    'kaycha': {
-        'name': 'Kaycha Labs',
-        'urls': ['kaychalabs.com', 'yourcoa.com'],
-        'text_patterns': ['Kaycha Labs', 'Kaycha Laboratory'],
-        'module': 'kaycha',
-        'algorithm': 'parse_kaycha_coa',
-        'version': '1.0.0',
-        'states': ['az', 'fl', 'ny', 'oh', 'nj'],
-        'tier': 3,
-        'lims': False,
-    },
-    'smithers': {
-        'name': 'Smithers CTS',
-        'urls': ['smithers.com'],
-        'text_patterns': ['Smithers CTS', 'Smithers CTS Arizona',
-                        'Smithers CTS New York'],
-        'module': 'smithers',
-        'algorithm': 'parse_smithers_coa',
-        'version': '1.0.0',
-        'states': ['az', 'ny'],
-        'tier': 3,
-        'lims': False,
-    },
-    'phytofarma': {
-        'name': 'Phyto-Farma Labs',
-        'urls': ['phytofarmalabs.com'],
-        'text_patterns': ['Phyto-Farma Labs', 'Phyto-farma Labs'],
-        'module': 'phytofarma',
-        'algorithm': 'parse_phyto_farma_coa',
-        'version': '1.0.0',
-        'states': ['ny'],
-        'tier': 3,
-        'lims': False,
-    },
-    'green_analytics': {
-        'name': 'Green Analytics',
-        'urls': ['greenanalyticsllc.com'],
-        'text_patterns': ['Green Analytics East', 'Green Analytics MD', 'Green Analytics NY'],
-        'module': 'green_analytics',
-        'algorithm': 'parse_green_analytics_coa',
-        'version': '1.0.0',
-        'states': ['nj', 'md', 'ny'],
-        'tier': 3,
-        'lims': False,
-    },
-    'acs': {
-        'name': 'ACS Laboratory',
-        'urls': ['acslabcannabis.com', 'acslab.com'],
-        'text_patterns': ['ACS Laboratory', 'ACS Labs', '721 Cortaro'],
-        'module': 'acs',
-        'algorithm': 'parse_acs_coa',
-        'version': '2.0.0',
-        'states': ['fl'],
-        'tier': 3,
-        'lims': False,
-    },
-    'terplife': {
-        'name': 'TerpLife Labs',
-        'urls': ['terplifelabs.com', 'www.terplifelabs.com'],
-        'text_patterns': ['TerpLife Labs', 'TerpLife', 'TL LABORATORIES', 'TL Laboratories'],
-        'module': 'terplife',
-        'algorithm': 'parse_terplife_coa',
-        'version': '1.0.0',
-        'states': ['fl'],
-        'tier': 3,
-        'lims': False,
-    },
-
-    # ── Phase 2+ labs (registered but not yet revived) ────────────
-    # Uncomment and set tier to 3+ as algorithms are revived.
-    #
-    # 'anresco': {
-    #     'name': 'Anresco Laboratories',
-    #     'urls': ['anresco.com'],
-    #     'text_patterns': ['Anresco'],
-    #     'module': 'anresco',
-    #     'algorithm': 'parse_anresco_coa',
-    #     'version': '1.0.0',
-    #     'states': ['ca'],
-    #     'tier': 4,
-    #     'lims': False,
-    # },
-    # 'mcrlabs': {
-    #     'name': 'MCR Labs',
-    #     'urls': ['mcrlabs.com', 'reports.mcrlabs.com'],
-    #     'text_patterns': ['MCR Labs'],
-    #     'module': 'mcrlabs',
-    #     'algorithm': 'parse_mcr_labs_coa',
-    #     'version': '1.0.0',
-    #     'states': ['ma'],
-    #     'tier': 4,
-    #     'lims': False,
-    # },
-    # 'greenleaflab': {
-    #     'name': 'Green Leaf Lab',
-    #     'urls': ['greenleaflab.org'],
-    #     'text_patterns': ['Green Leaf Lab'],
-    #     'module': 'greenleaflab',
-    #     'algorithm': 'parse_green_leaf_lab_coa',
-    #     'version': '1.0.0',
-    #     'states': ['or', 'ca'],
-    #     'tier': 4,
-    #     'lims': False,
-    # },
-    # 'sonoma': {
-    #     'name': 'Sonoma Lab Works',
-    #     'urls': ['sonomalabworks.com'],
-    #     'text_patterns': ['Sonoma Lab Works'],
-    #     'module': 'sonoma',
-    #     'algorithm': 'parse_sonoma_coa',
-    #     'version': '1.0.0',
-    #     'states': ['ca'],
-    #     'tier': 4,
-    #     'lims': False,
-    # },
-}
 
 
 def identify_lab(
@@ -1653,190 +1357,6 @@ class AIClient:
         return parsed, cost, in_tok, out_tok
 
 
-# ╔══════════════════════════════════════════════════════════════════╗
-# ║ Prompts                                                          ║
-# ╚══════════════════════════════════════════════════════════════════╝
-
-METADATA_SYSTEM_PROMPT = """You are an expert cannabis Certificate of Analysis (COA) parser. Extract structured metadata from the provided COA document. Return data as JSON matching the LabTestMetadata schema.
-
-Fields to extract:
-| Field | Type | Example | Description |
-|-------|------|---------|-------------|
-| product_name | str | "Blue Dream Preroll (1g)" | Full product name as shown |
-| strain_name | str | "Blue Dream" | Cannabis strain/cultivar name |
-| product_type | str | "flower" | One of: flower, concentrate, edible, preroll, vape, tincture, topical |
-| date_tested | str | "2024-01-23" | Test/analysis completion date (ISO YYYY-MM-DD) |
-| date_received | str | "2024-01-22" | Sample received date (ISO YYYY-MM-DD) |
-| date_collected | str | "" | Sample collection date (ISO YYYY-MM-DD) |
-| batch_number | str | "BN-2024-123" | Batch, lot, or metrc batch number |
-| batch_size | float | 1000.0 | Batch size in grams (convert lbs/oz if needed) |
-| lab | str | "SC Laboratories" | Testing laboratory full name |
-| lab_license_number | str | "C8-0000013-LIC" | Lab license — copy EVERY character carefully |
-| lab_address | str | "123 Main St" | Lab street address |
-| lab_city | str | "Santa Cruz" | Lab city |
-| lab_state | str | "CA" | Lab state (2-letter code) |
-| lab_zipcode | str | "95060" | Lab ZIP code |
-| producer | str | "ABC Farms LLC" | Producer/cultivator/manufacturer name |
-| producer_street | str | "789 Farm Rd" | Producer street address |
-| producer_city | str | "Bend" | Producer city |
-| producer_state | str | "OR" | Producer state (2-letter code) |
-| producer_zipcode | str | "97701" | Producer ZIP code |
-| producer_license_number | str | "C11-0005002-LIC" | Producer license — copy carefully |
-| distributor | str | "" | Distributor name (if listed) |
-| distributor_license_number | str | "" | Distributor license (if listed) |
-| sample_id | str | "2RLS-240530-018" | Lab sample ID — copy carefully |
-| sample_weight | float | 1.0 | Sample weight in grams |
-| total_cannabinoids | float | 54.79 | Total cannabinoids — ALWAYS in percent (%) |
-| total_cbd | float | 0.5 | Total CBD — ALWAYS in percent (%) |
-| total_thc | float | 18.0 | Total THC — ALWAYS in percent (%) |
-| total_terpenes | float | 2.0 | Total terpenes — ALWAYS in percent (%) |
-| status | str | "pass" | Overall pass/fail status |
-| analyses | list | ["cannabinoids", "terpenes"] | List of all analysis types on the COA |
-
-CRITICAL RULES:
-
-1. TOTALS ARE ALWAYS IN PERCENT: total_thc, total_cbd, total_cannabinoids, and total_terpenes must ALWAYS be reported in percent (%). If the COA shows these as mg/g, divide by 10 to convert to percent. A total_thc of 737.71 mg/g = 73.771%. If total_thc appears as a large number (>100), it is likely mg/g and must be converted.
-
-2. LICENSE NUMBERS AND SAMPLE IDS: These are alphanumeric codes where every character matters. Read them very carefully — distinguish between similar characters: 0 vs O, 1 vs I vs l, 8 vs B, 5 vs S. Copy exactly as printed.
-
-3. DATES: Convert any date format to ISO (YYYY-MM-DD). "03/11/2024" → "2024-03-11". "March 11, 2024" → "2024-03-11". Use the test completion date for date_tested, not the report date.
-
-4. DEFAULT VALUES: Return 0.0 for numeric fields not found, "" for string fields not found.
-
-5. PRODUCT TYPE: Use lowercase. "Pre-Roll" → "preroll". "Vape Cartridge" → "vape". "Live Resin" → "concentrate". "Gummies" → "edible"."""
-
-METADATA_USER_PROMPT = (
-    'Extract the metadata from this Certificate of Analysis (COA). '
-    'Remember: total_thc, total_cbd, total_cannabinoids, and total_terpenes '
-    'must be in PERCENT (%). If shown as mg/g, divide by 10. '
-    'Copy license numbers and sample IDs character-by-character. '
-    'Return valid JSON matching the LabTestMetadata schema.'
-)
-
-ANALYSIS_SYSTEM_PROMPT = """You are an expert cannabis Certificate of Analysis (COA) parser. Extract lab test results for a SPECIFIC analysis type from the provided COA page(s). Return data as JSON with fields:
-
-- "analysis": The analysis type name (string)
-- "results": A list of result objects, each with:
-  | Field | Type | Description |
-  |-------|------|-------------|
-  | key | str | Standardized analyte key (snake_case) |
-  | name | str | Lab's displayed analyte name (as printed) |
-  | value | float | The MEASURED TEST RESULT value (see rules below) |
-  | units | str | Units of the value field (see rules below) |
-  | limit | float | Action/regulatory limit (0.0 if not shown) |
-  | lod | float | Limit of Detection (0.0 if not shown) |
-  | loq | float | Limit of Quantification (0.0 if not shown) |
-  | status | str | "pass", "fail", or "" |
-
-═══════════════════════════════════════════════════════════════
-CRITICAL: HOW TO READ COA TABLES CORRECTLY
-═══════════════════════════════════════════════════════════════
-
-Cannabis COA tables typically have MULTIPLE numeric columns per analyte. It is essential to identify the correct column for each field. Common layouts include:
-
-LAYOUT A (Cannabinoids/Terpenes — dual-unit):
-  Analyte | LOD(%) | LOQ(%) | Result(%) | Result(mg/g)
-  Δ9-THC  |  0.01  |  0.03  |  73.771   |  737.71
-
-LAYOUT B (Cannabinoids/Terpenes — single-unit with separate LOD):
-  Analyte | Result(%) | LOD(%) | LOQ(%) | Status
-  Δ9-THC  |  73.771   |  0.01  |  0.03  |  Pass
-
-LAYOUT C (Pesticides/Heavy Metals):
-  Analyte    | Result(ppb) | LOD(ppb) | LOQ(ppb) | Limit(ppb) | Status
-  Abamectin  |    ND       |   10     |   20     |   100      |  Pass
-
-LAYOUT D (Microbials):
-  Analyte        | Result(cfu/g) | Limit(cfu/g) | Status
-  Total Aerobic  |    <100       |   10000      |  Pass
-
-KEY RULES FOR IDENTIFYING THE CORRECT VALUE:
-
-1. VALUE = the TEST RESULT, not LOD or LOQ.
-   - The "Result", "Concentration", "Amount", or "Tested" column is the value.
-   - LOD and LOQ are METHOD parameters (detection/quantification limits). They are NOT test results.
-   - LOD is always ≤ LOQ. Both are usually small numbers near zero.
-   - If you see a column header with "LOD" or "LOQ" or "Detection" or "Quantification", that column goes in the lod or loq field, NOT the value field.
-
-2. UNIT PREFERENCE for Cannabinoids and Terpenes:
-   - PREFERRED: percent (%) — report values from the "%" or "Result(%)" column.
-   - If a COA shows BOTH percent AND mg/g columns, use the PERCENT column for "value" and "percent" for "units".
-   - If a COA shows ONLY mg/g (no percent column), use mg/g and set units to "mg/g".
-   - EXCEPTION for EDIBLES: Use "mg" (milligrams per serving/package) or "mg/g" as shown. Edible COAs commonly report potency in mg, which is correct.
-   - How to tell the columns apart: percent values for cannabinoids are typically 0-100 (e.g., 73.771%). The mg/g equivalent is 10× larger (e.g., 737.71 mg/g). If you see two columns where one is exactly 10× the other, the smaller one is percent.
-
-3. UNIT PREFERENCE for Pesticides and Heavy Metals:
-   - Use the units shown on the COA: typically "ppb", "ppm", "ug/g", or "ug/kg".
-   - The RESULT column contains the test result. "ND" (Not Detected) = 0.0.
-   - The ACTION LIMIT column goes in the "limit" field.
-
-4. UNIT PREFERENCE for Microbials:
-   - Use "cfu/g" (colony forming units per gram) as shown.
-   - For mycotoxin tests, use "ppb" or "ug/kg" as shown.
-
-5. UNIT PREFERENCE for Moisture and Water Activity:
-   - Moisture content: use "percent".
-   - Water activity (aW): use "aW" (dimensionless, typically 0.0-1.0).
-
-6. HANDLING SPECIAL VALUES:
-   - "ND" (Not Detected) → value = 0.0
-   - "<LOQ" → value = 0.0 (the analyte was detected but below quantification)
-   - "N/A" or blank → value = 0.0
-   - "Pass"/"Fail" in the result column (with no numeric value) → value = 0.0, set status field instead
-
-7. GENERAL:
-   - Extract ONLY results for the specified analysis type.
-   - Use standardized analyte keys (snake_case).
-   - Include ALL analytes shown in the table, even if not in the standard key list.
-   - LOD and LOQ should use the same units as the value field where possible."""
-
-ANALYSIS_USER_PROMPT = (
-    'Extract ONLY the %s results from this COA page(s). '
-    'Standard analyte keys for this analysis:\n\n%s\n\n'
-    'Remember: "value" = the TEST RESULT column (not LOD or LOQ). '
-    'For cannabinoids/terpenes, prefer the percent (%%) column over mg/g. '
-    'Return valid JSON with "analysis" and "results" fields.'
-)
-
-SINGLE_PAGE_SYSTEM_PROMPT = """You are an expert cannabis Certificate of Analysis (COA) parser. This is a single-page COA. Extract ALL available data in one pass.
-
-Return JSON with these top-level fields:
-- "metadata": Object with product_name, strain_name, product_type, date_tested, date_received, date_collected, batch_number, batch_size, lab, lab_license_number, lab_address, lab_city, lab_state, lab_zipcode, producer, producer_street, producer_city, producer_state, producer_zipcode, producer_license_number, distributor, distributor_license_number, sample_id, sample_weight, total_cannabinoids, total_cbd, total_thc, total_terpenes, status, analyses.
-- "cannabinoids": List of result objects for cannabinoid analytes (if present).
-- "terpenes": List of result objects for terpene analytes (if present).
-
-Each result object: {"key": "snake_case_name", "name": "Lab Display Name", "value": 0.0, "units": "percent", "limit": 0.0, "lod": 0.0, "loq": 0.0, "status": "pass"}
-
-CRITICAL RULES:
-
-1. TOTALS IN METADATA: total_thc, total_cbd, total_cannabinoids, total_terpenes are ALWAYS in percent (%). If shown as mg/g, divide by 10 to convert.
-
-2. VALUE = TEST RESULT, not LOD or LOQ:
-   - COA tables have multiple numeric columns. The "Result" or "Concentration" column is the value.
-   - LOD (Limit of Detection) and LOQ (Limit of Quantification) are METHOD parameters — do NOT use them as the value.
-   - LOD ≤ LOQ, and both are usually small numbers near zero.
-
-3. UNIT PREFERENCE for Cannabinoids/Terpenes:
-   - PREFER percent (%) over mg/g when both columns are shown.
-   - If both appear, the percent column has smaller values (e.g., 73.771%) and the mg/g column is ~10× larger (e.g., 737.71 mg/g). Use the percent column.
-   - EXCEPTION for edibles: use mg or mg/g as shown on the COA.
-
-4. HANDLING SPECIAL VALUES: "ND" = 0.0. "<LOQ" = 0.0. Blank = 0.0.
-
-5. DEFAULT VALUES: 0.0 for missing numeric fields, "" for missing strings. Dates in ISO format (YYYY-MM-DD). product_type in lowercase (flower, concentrate, edible, preroll, vape, tincture).
-
-6. LICENSE/SAMPLE IDs: Copy EVERY character carefully — distinguish 0/O, 1/I/l, 8/B, 5/S.
-
-7. Include ALL analytes shown on the COA. If only cannabinoids are present (e.g., hemp COAs), leave "terpenes" as an empty list. If additional analyses (pesticides, heavy metals, etc.) are present, include them as additional keys."""
-
-SINGLE_PAGE_USER_PROMPT = (
-    'Extract ALL metadata and lab test results from this single-page COA. '
-    'Remember: "value" = the TEST RESULT column (not LOD/LOQ). '
-    'For cannabinoids/terpenes, prefer percent (%) over mg/g. '
-    'Return valid JSON with "metadata", "cannabinoids", and "terpenes" fields '
-    '(plus any additional analyses found).'
-)
-
 
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║ PDF Utilities                                                    ║
@@ -1916,7 +1436,11 @@ def _make_schema_strict(schema: Dict) -> None:
 
 
 def _metadata_json_hint() -> str:
-    """Return a JSON schema hint for metadata extraction."""
+    """Return a JSON schema hint for metadata extraction.
+
+    Total fields use ``null`` (not ``0.0``) to signal "not found" — this
+    is scientifically different from a measured value of zero.
+    """
     return json.dumps({
         'product_name': 'str', 'strain_name': 'str', 'product_type': 'str',
         'date_tested': 'YYYY-MM-DD', 'date_received': 'YYYY-MM-DD',
@@ -1929,8 +1453,8 @@ def _metadata_json_hint() -> str:
         'producer_license_number': 'str',
         'distributor': 'str', 'distributor_license_number': 'str',
         'sample_id': 'str', 'sample_weight': 0.0,
-        'total_cannabinoids': 0.0, 'total_cbd': 0.0, 'total_thc': 0.0,
-        'total_terpenes': 0.0, 'status': 'str',
+        'total_cannabinoids': None, 'total_cbd': None, 'total_thc': None,
+        'total_terpenes': None, 'status': 'str',
         'analyses': ['cannabinoids', 'terpenes'],
     }, indent=2)
 

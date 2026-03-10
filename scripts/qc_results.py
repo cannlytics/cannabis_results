@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Cannlytics
 Authors:
     Keegan Skeate <https://github.com/keeganskeate>
 Created: 2026-03-02
-Updated: 2026-03-08
+Updated: 2026-03-09
 License: MIT
 
 Description:
@@ -101,6 +101,31 @@ VALID_CA_PROVINCES: Set[str] = {
 
 ALL_VALID_REGIONS: Set[str] = VALID_US_STATES | VALID_CA_PROVINCES
 
+# Full state/province name → two-letter code (lowercase keys, uppercase values).
+STATE_NAME_TO_CODE: Dict[str, str] = {
+    'alabama': 'AL', 'alaska': 'AK', 'arizona': 'AZ', 'arkansas': 'AR',
+    'california': 'CA', 'colorado': 'CO', 'connecticut': 'CT', 'delaware': 'DE',
+    'florida': 'FL', 'georgia': 'GA', 'hawaii': 'HI', 'idaho': 'ID',
+    'illinois': 'IL', 'indiana': 'IN', 'iowa': 'IA', 'kansas': 'KS',
+    'kentucky': 'KY', 'louisiana': 'LA', 'maine': 'ME', 'maryland': 'MD',
+    'massachusetts': 'MA', 'michigan': 'MI', 'minnesota': 'MN',
+    'mississippi': 'MS', 'missouri': 'MO', 'montana': 'MT', 'nebraska': 'NE',
+    'nevada': 'NV', 'new hampshire': 'NH', 'new jersey': 'NJ',
+    'new mexico': 'NM', 'new york': 'NY', 'north carolina': 'NC',
+    'north dakota': 'ND', 'ohio': 'OH', 'oklahoma': 'OK', 'oregon': 'OR',
+    'pennsylvania': 'PA', 'rhode island': 'RI', 'south carolina': 'SC',
+    'south dakota': 'SD', 'tennessee': 'TN', 'texas': 'TX', 'utah': 'UT',
+    'vermont': 'VT', 'virginia': 'VA', 'washington': 'WA',
+    'west virginia': 'WV', 'wisconsin': 'WI', 'wyoming': 'WY',
+    'district of columbia': 'DC', 'puerto rico': 'PR',
+    # Canadian provinces.
+    'alberta': 'AB', 'british columbia': 'BC', 'manitoba': 'MB',
+    'new brunswick': 'NB', 'newfoundland and labrador': 'NL',
+    'nova scotia': 'NS', 'northwest territories': 'NT', 'nunavut': 'NU',
+    'ontario': 'ON', 'prince edward island': 'PE', 'quebec': 'QC',
+    'saskatchewan': 'SK', 'yukon': 'YT',
+}
+
 
 # =============================================================================
 # Sentinel and Normalization Constants
@@ -127,6 +152,10 @@ _PRODUCT_TYPES = {
         'plant',                      # 87 records
         'flower, inhalable',          # 15 records
         'flower, medical inhalable',  # 1 record
+        # Non-canonical variants from validation (March 9, 2026):
+        "cannabis (mmtc's) flower & plants",  # 207 records (FL MMTC)
+        'enhanced/infused flowers',           # 60 records
+        'flower - cured',                     # 50 records
     ],
     'preroll': [
         'preroll', 'pre-roll', 'pre roll', 'joint', 'blunt',
@@ -135,6 +164,12 @@ _PRODUCT_TYPES = {
         # Non-canonical variants from validation (March 7, 2026):
         'infused flower/pre-roll',    # 5 records
         'pre-roll cannabis',          # 2 records
+        # Non-canonical variants from validation (March 9, 2026):
+        'enhanced/infused preroll',           # 33 records
+        'infused flower/pre-roll, product inhalable',  # 24 records
+        'pre-roll cannabis, product inhalable',        # 20 records
+        'infused/enhanced preroll',           # 2 records
+        'pre-roll product, product inhalable', # 211 records
     ],
     'concentrate': [
         'concentrate', 'extract', 'wax', 'shatter', 'rosin',
@@ -146,11 +181,19 @@ _PRODUCT_TYPES = {
         'derivative',                       # 4,488 records
         'concentrates & extracts',          # 322 records
         'concentrate, product inhalable',   # 100 records
+        # Non-canonical variants from validation (March 9, 2026):
+        "cannabis (mmtc's) derivative products",  # 17 records (FL MMTC)
+        'sugar wax',                        # 6 records
+        'concentrates &',                   # 1 record (truncated)
+        'batter/badder',                    # 1 record
     ],
     'vape': [
         'vape', 'cartridge', 'cart', 'vaporizer', 'pod',
         'disposable', 'aio', 'all-in-one', 'vape pen', 'pen',
         'vape cartridge',
+        # Non-canonical variants from validation (March 9, 2026):
+        'inhalation',                 # 6 records
+        '(inhalation - heated)',      # 2 records
     ],
     'edible': [
         'edible', 'gummy', 'gummies', 'chocolate', 'beverage',
@@ -161,21 +204,34 @@ _PRODUCT_TYPES = {
         'infused',                    # 64 records
         'infused, solid edible',      # 9 records
         'infused, liquid edible',     # 1 record
+        # Non-canonical variants from validation (March 9, 2026):
+        'soft chew',                  # 177 records
+        'infused, concentrated liquid edible',  # 8 records
+        'oral',                           # 1 record (oral dosage form)
     ],
     'tincture': [
         'tincture', 'oil', 'drops', 'sublingual', 'oral solution',
         'mct oil', 'tinctures',
+        # Non-canonical variants from validation (March 9, 2026):
+        '(transmucosal )',            # 1 record (sublingual/buccal)
+        'transmucosal',               # variant without parens
     ],
     'topical': [
         'topical', 'cream', 'lotion', 'balm', 'salve',
         'transdermal', 'patch', 'ointment', 'topicals',
         # Non-canonical variants from validation (March 7, 2026):
         'infused, non-inhalable',     # 1 record
+        # Non-canonical variants from validation (March 9, 2026):
+        'infused, topical',           # 4 records
     ],
 }
 for canonical, variants in _PRODUCT_TYPES.items():
     for v in variants:
         PRODUCT_TYPE_MAP[v.lower()] = canonical
+
+# Additional product type mappings that don't fit a canonical category.
+# These map to non-canonical but accepted labels (e.g., "other").
+PRODUCT_TYPE_MAP['environmental'] = 'other'  # 42 records (monitoring samples)
 
 # Status normalization map.
 STATUS_MAP: Dict[str, str] = {
@@ -239,6 +295,7 @@ ANALYSIS_NAME_NORMALIZATION: Dict[str, str] = {
     'terpenes summary (top ten)': 'terpenes', 'terpenes (top ten)': 'terpenes',
     'terpenes panel': 'terpenes', 'terpene_testing': 'terpenes',
     'terpenes_analysis': 'terpenes',
+    'terpenes total': 'terpenes', 'terpenes_total': 'terpenes',
     'flavonoids': 'terpenes',
     # ── Pesticides ────────────────────────────────────────────────
     'pesticides': 'pesticides', 'pesticide': 'pesticides',
@@ -374,6 +431,28 @@ ANALYSIS_NAME_NORMALIZATION: Dict[str, str] = {
     'moisture meter': 'moisture_foreign_matter',
     'cannabinoids potency': 'cannabinoids',
     'cannabinoid_potency': 'cannabinoids',
+    # ── Non-canonical analysis variants (March 9, 2026) ──────────
+    # These variants appeared in the 30,991-record dataset run.
+    # Underscore-joined variants (from AI parsing with underscored keys):
+    'agricultural_agents': 'pesticides',
+    'pesticide_residues': 'pesticides', 'pesticide residues': 'pesticides',
+    'percent moisture': 'moisture_foreign_matter',
+    'microbial_analysis': 'microbials',
+    'heavy_metal_analysis': 'heavy_metals',
+    'filth_and_foreign_material_analysis': 'moisture_foreign_matter',
+    'mycotoxin_analysis': 'microbials',
+    'total cannabinoids': 'cannabinoids', 'total_cannabinoids': 'cannabinoids',
+    # Method-specific variants with spaces (AI sometimes preserves full method names):
+    'microbials pcr': 'microbials', 'microbials_pcr': 'microbials',
+    'microbial impurities - tymc': 'microbials',
+    'microbial impurities tymc': 'microbials',
+    'pesticides by lcmsms': 'pesticides',
+    'residual solvents by hs-gc-ms': 'residual_solvents',
+    'residual_solvents_by_hs_gc_ms': 'residual_solvents',
+    'mycotoxins by lcmsms': 'microbials',
+    'heavy metals by icpms': 'heavy_metals',
+    'micro by petri & qpcr': 'microbials',
+    'micro by petri and qpcr': 'microbials',
 }
 
 # Date formats to try when parsing.
@@ -640,8 +719,15 @@ def clean_string_fields(df: pd.DataFrame, report: QCReport) -> pd.DataFrame:
         cleaned = cleaned.str.strip()
         cleaned = cleaned.apply(_clean_unicode)
         cleaned = cleaned.str.replace(r'\s+', ' ', regex=True)
-        # Strip stray bracket artifacts (e.g., "[value]", "value]", "[value").
-        cleaned = cleaned.str.replace(r'^\[|\]$', '', regex=True)
+        # Strip bracket artifacts from AI parsing:
+        # 1) Fully-wrapped values: "[Some Value]" → "Some Value"
+        cleaned = cleaned.str.replace(r'^\[(.*)\]$', r'\1', regex=True)
+        # 2) Embedded bracket-wrapped sentinels: "Company [Not Provided]" → "Company"
+        cleaned = cleaned.str.replace(
+            r'\s*\[(?:not provided|unknown|n/?a|none|null|not available|'
+            r'not disclosed|not applicable|tbd|pending|unspecified)\]\s*',
+            ' ', regex=True, case=False,
+        )
         cleaned = cleaned.str.strip()
         sentinel_mask = cleaned.str.lower().isin(SENTINEL_VALUES)
         cleaned = cleaned.where(~sentinel_mask, '')
@@ -917,7 +1003,7 @@ def clean_license_numbers(df: pd.DataFrame, report: QCReport) -> pd.DataFrame:
 
 
 def validate_states(df: pd.DataFrame, report: QCReport) -> pd.DataFrame:
-    """Rule 11: Validate state codes."""
+    """Rule 11: Validate state codes and convert full state names to codes."""
     rule = 'State validation'
     found = 0
     fixed = 0
@@ -936,6 +1022,10 @@ def validate_states(df: pd.DataFrame, report: QCReport) -> pd.DataFrame:
                 return s.lower()
             if len(s) == 2:
                 return s.lower() if upper in ALL_VALID_REGIONS else ''
+            # Try full state/province name → code lookup.
+            code = STATE_NAME_TO_CODE.get(s.lower())
+            if code:
+                return code.lower()
             return ''
 
         cleaned = df[col].apply(_validate_state)

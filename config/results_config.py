@@ -5,13 +5,27 @@ Copyright (c) 2024-2026 Cannlytics
 Authors:
     Keegan Skeate <https://github.com/keeganskeate>
 Created: 2/1/2026
-Updated: 3/4/2026
+Updated: 3/9/2026
 License: <https://github.com/cannlytics/cannlytics/blob/main/LICENSE>
 
 Description:
     Centralized configuration for all result collection and processing.
-    This module provides path management, state configurations, and
-    API settings following the cannabis_licenses repository pattern.
+    This module provides path management, state configurations, API
+    settings, AI provider definitions, and operational constants
+    following the cannabis_licenses repository pattern.
+
+    Configuration Groups:
+        - PathConfig: File system path management
+        - StateConfig / STATES: Per-state collection configurations
+        - STATE_NAMES: State abbreviation → hyphenated name mapping
+        - API_CONFIG: Rate limiting, retry, and timeout settings
+        - PROCESSING_CONFIG: Parse method, model, and OCR settings
+        - AI_PROVIDERS: AI provider pricing, models, and capabilities
+        - FLEX_*: OpenAI Flex processing configuration
+        - ANALYSIS_SKIP_RULES: Bayesian analysis filtering
+        - SOURCE_CONFIG: Per-source collection parameters
+        - PRODUCT_TYPES: Product type standardization
+        - DATA_QUALITY: Quality thresholds
 """
 # Standard imports:
 from dataclasses import dataclass, field
@@ -250,6 +264,14 @@ STATES: Dict[str, StateConfig] = {
                       notes='202K+ records; needs unification'),
 }
 
+# State abbreviation → hyphenated lowercase name mapping.
+# Derived from STATES to avoid redundancy. Used by parse_coas.py
+# and PathConfig to resolve state data directories.
+STATE_NAMES = {
+    code: cfg.name.lower().replace(' ', '-')
+    for code, cfg in STATES.items()
+}
+
 
 # === API Configuration ===
 API_CONFIG = {
@@ -269,6 +291,133 @@ PROCESSING_CONFIG = {
     'embedding_model': 'text-embedding-3-small',
     'max_pdf_size_mb': 50,             # Skip PDFs larger than this
     'enable_ocr': True,                # Enable OCR for image-based PDFs
+}
+
+
+# === AI Provider Configuration (per 1M tokens) ===
+# Provider definitions for the hybrid COA parsing engine.
+# Each provider specifies models, pricing, capabilities, and API key.
+AI_PROVIDERS = {
+    'anthropic': {
+        'name': 'Anthropic Claude',
+        'models': {
+            'claude-sonnet-4-5-20250929': {
+                'input': 3.00, 'output': 15.00,
+                'supports_pdf': True, 'supports_images': True,
+                'supports_structured_output': False,
+                'max_output_tokens': 64_000,
+            },
+            'claude-haiku-4-5-20251001': {
+                'input': 1.00, 'output': 5.00,
+                'supports_pdf': True, 'supports_images': True,
+                'supports_structured_output': False,
+                'max_output_tokens': 64_000,
+            },
+        },
+        'default_model': 'claude-haiku-4-5-20251001',
+        'env_key': 'ANTHROPIC_API_KEY',
+        'priority': 1,
+        'free_tier': False,
+    },
+    'openai': {
+        'name': 'OpenAI',
+        'models': {
+            'gpt-5-mini': {
+                'input': 0.25, 'output': 2.00,
+                'supports_pdf': True, 'supports_images': True,
+                'supports_structured_output': True,
+                'max_output_tokens': 16_384,
+                'image_cost': 0.003825,
+            },
+            'gpt-5-nano': {
+                'input': 0.05, 'output': 0.40,
+                'supports_pdf': True, 'supports_images': True,
+                'supports_structured_output': True,
+                'max_output_tokens': 16_384,
+                'image_cost': 0.001275,
+            },
+            'gpt-5': {
+                'input': 1.25, 'output': 10.00,
+                'supports_pdf': True, 'supports_images': True,
+                'supports_structured_output': True,
+                'max_output_tokens': 32_768,
+                'image_cost': 0.003825,
+            },
+        },
+        'default_model': 'gpt-5-nano',
+        'env_key': 'OPENAI_API_KEY',
+        'priority': 2,
+        'free_tier': False,
+    },
+    'gemini': {
+        'name': 'Google Gemini',
+        'models': {
+            'gemini-2.5-flash': {
+                'input': 0.30, 'output': 2.50,
+                'supports_pdf': True, 'supports_images': True,
+                'supports_structured_output': True,
+                'max_output_tokens': 65_536,
+                'free_tier_input': 0.0, 'free_tier_output': 0.0,
+            },
+            'gemini-2.5-pro': {
+                'input': 1.25, 'output': 10.00,
+                'supports_pdf': True, 'supports_images': True,
+                'supports_structured_output': True,
+                'max_output_tokens': 65_536,
+                'free_tier_input': 0.0, 'free_tier_output': 0.0,
+            },
+        },
+        'default_model': 'gemini-2.5-flash',
+        'env_key': 'GOOGLE_API_KEY',
+        'priority': 3,
+        'free_tier': True,
+    },
+    'xai': {
+        'name': 'xAI Grok',
+        'models': {
+            'grok-4-1-fast-non-reasoning': {
+                'input': 0.20, 'output': 0.50,
+                'supports_pdf': False, 'supports_images': True,
+                'supports_structured_output': True,
+                'max_output_tokens': 16_384,
+            },
+            'grok-3-mini': {
+                'input': 0.30, 'output': 0.50,
+                'supports_pdf': False, 'supports_images': True,
+                'supports_structured_output': True,
+                'max_output_tokens': 16_384,
+            },
+        },
+        'default_model': 'grok-4-1-fast-non-reasoning',
+        'env_key': 'XAI_API_KEY',
+        'priority': 4,
+        'free_tier': False,
+    },
+}
+
+
+# === Flex Processing Configuration ===
+# OpenAI Flex processing provides 50% cost reduction (Batch API
+# rates) for synchronous requests with higher latency tolerance.
+# Supported for GPT-5 family models.
+FLEX_COST_MULTIPLIER = 0.5  # 50% discount on standard rates
+FLEX_TIMEOUT = 900.0  # 15 minutes (recommended by OpenAI docs)
+
+
+# === Bayesian Analysis Skip Rules ===
+# Product-type-specific priors for analyses that are known to be
+# unnecessary based on domain knowledge and observed zero-result
+# patterns. When metadata reveals the product type, we update our
+# beliefs about which analyses to parse — skipping those with a
+# near-zero prior probability of yielding results.
+#
+# Structure: {analysis_name: [product_types_to_skip]}
+# Rationale is documented per rule so future additions are traceable.
+ANALYSIS_SKIP_RULES = {
+    # Edibles are almost never tested for terpenes. Terpene
+    # profiles are irrelevant after decarboxylation / infusion.
+    # Observed: 100% zero-result rate for edibles (11/11 in CA).
+    'terpenes': ['edible'],
 }
 
 

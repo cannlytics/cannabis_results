@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Cannlytics
 Authors:
     Keegan Skeate <https://github.com/keeganskeate>
 Created: 2026-03-02
-Updated: 2026-03-02
+Updated: 2026-03-09
 License: <https://github.com/cannlytics/cannlytics/blob/main/LICENSE>
 
 Description:
@@ -33,6 +33,23 @@ Usage:
     python agg_results.py --states ca fl ny
 
 Changelog:
+    v1.4.0 (2026-03-09):
+        - Added scrub_false_zero_totals(): replaces false 0.0 totals with
+          None when no corroborating analysis results exist. Historically,
+          the AI prompt instructed "Return 0.0 for numeric fields not found,"
+          causing total_thc/total_cbd/total_cannabinoids/total_terpenes to
+          report 0.0 instead of None for COAs where these were not tested.
+          "Not tested" ≠ "measured as zero" — this fix preserves the
+          scientific distinction for downstream statistics and strain analysis.
+        - Applied scrub to both AI-parsed and algorithm records during
+          aggregation.
+
+    v1.3.0 (2026-03-09):
+        - Fixed CSV export crash (_csv.Error: need to escape) by using
+          csv.QUOTE_NONNUMERIC and sanitizing control characters
+        - JSON columns (results, analyses) with embedded double quotes
+          are now properly quoted during CSV export
+
     v1.2.0 (2026-03-04):
         - Added model-preference cache selection (--model flag)
         - Default preferred model: gpt-5-nano (largest caches)
@@ -54,6 +71,7 @@ Changelog:
 """
 # Standard imports:
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -92,7 +110,7 @@ except ImportError:
 # =============================================================================
 
 # Version
-VERSION = '1.2.0'
+VERSION = '1.4.0'
 
 # Reproducibility
 RANDOM_SEED = 42
@@ -655,6 +673,9 @@ def load_algorithm_records(
             algo = record.get('parsing_algorithm', 'algorithm')
             record.setdefault('source', f'algorithm-{algo}')
 
+            # Scrub false zero totals (same logic as AI records).
+            scrub_false_zero_totals(record)
+
             all_records.append(record)
             loaded += 1
 
@@ -798,6 +819,105 @@ def extract_moisture_water_activity(
             water_activity = value
 
     return moisture, water_activity
+
+
+# ── Total fields: false-zero scrubbing ─────────────────────────────────
+
+# Fields that represent summary totals from the COA.
+# These should be None when the analysis was not performed.
+_TOTAL_FIELDS = ('total_thc', 'total_cbd', 'total_cannabinoids', 'total_terpenes')
+
+# Maps each total field to the analysis type whose presence would
+# corroborate a zero value (i.e., if results for this analysis exist,
+# then total=0.0 *could* be a real measurement).
+_TOTAL_CORROBORATION = {
+    'total_thc': 'cannabinoids',
+    'total_cbd': 'cannabinoids',
+    'total_cannabinoids': 'cannabinoids',
+    'total_terpenes': 'terpenes',
+}
+
+
+def _safe_float(value) -> Optional[float]:
+    """Convert a value to float, returning None on failure or non-finite."""
+    if value is None:
+        return None
+    try:
+        v = float(value)
+        return None if (np.isnan(v) or np.isinf(v)) else v
+    except (ValueError, TypeError):
+        return None
+
+
+def scrub_false_zero_totals(
+        record: Dict,
+        corroborating_results: Optional[List[Dict]] = None,
+    ) -> Dict:
+    """Replace false ``0.0`` totals with ``None`` when uncorroborated.
+
+    The AI parsing prompt historically instructed *"Return 0.0 for numeric
+    fields not found,"* causing records without cannabinoid or terpene data
+    to report ``total_thc = 0.0`` instead of ``None``.  This is
+    scientifically incorrect: **"not tested" ≠ "measured as zero."**
+
+    **Logic:**
+
+    * ``total == 0.0`` AND **no** results exist for the corresponding
+      analysis type → replace with ``None`` (false zero — not tested).
+    * ``total == 0.0`` AND results **do** exist → keep ``0.0``
+      (analysis was performed; the zero may be legitimate).
+    * ``total != 0.0`` → leave unchanged (real measurement).
+
+    Args:
+        record: Flat record dict (**mutated in place**).
+        corroborating_results: Optional pre-parsed results list.
+            If ``None``, the function reads ``record['results']``.
+
+    Returns:
+        The same *record* dict (for chaining convenience).
+    """
+    # Load results list if not provided externally.
+    if corroborating_results is None:
+        results_raw = record.get('results', '[]')
+        if isinstance(results_raw, str):
+            try:
+                corroborating_results = json.loads(results_raw)
+            except (json.JSONDecodeError, TypeError):
+                corroborating_results = []
+        elif isinstance(results_raw, list):
+            corroborating_results = results_raw
+        else:
+            corroborating_results = []
+
+    # Build a set of analysis types present in the results.
+    analyses_present: Set[str] = set()
+    for r in corroborating_results:
+        if isinstance(r, dict):
+            a = r.get('analysis')
+            if a:
+                analyses_present.add(str(a).strip())
+
+    for field in _TOTAL_FIELDS:
+        val = record.get(field)
+        if val is None:
+            continue  # Already None — nothing to fix.
+
+        try:
+            val_f = float(val)
+        except (ValueError, TypeError):
+            continue
+
+        # Only scrub exact-zero values.
+        if val_f != 0.0:
+            continue
+
+        # Is there corroborating analysis data?
+        expected_analysis = _TOTAL_CORROBORATION.get(field)
+        if expected_analysis and expected_analysis not in analyses_present:
+            # No results for this analysis type → false zero.
+            record[field] = None
+
+    return record
 
 
 def merge_state_caches(
@@ -952,6 +1072,10 @@ def merge_state_caches(
 
         # Store analyses as JSON string
         record['analyses'] = json.dumps(record.get('analyses', []))
+
+        # Scrub false zero totals: replace 0.0 with None when no
+        # corroborating analysis results exist (see docstring).
+        scrub_false_zero_totals(record, corroborating_results=all_results)
 
         # Aggregation timestamp
         record['date_aggregated'] = get_timestamp()
@@ -1311,7 +1435,25 @@ def export_csv(
     # Replace NaN with empty string for cleaner CSV
     export_df = export_df.replace({np.nan: ''})
 
-    export_df.to_csv(output_path, index=False)
+    # Sanitize string columns: strip control characters (null bytes,
+    # vertical tabs, etc.) that can break the CSV writer. JSON columns
+    # (results, analyses) frequently contain embedded double quotes,
+    # which are valid but require proper CSV quoting.
+    for col in export_df.select_dtypes(include=['object']).columns:
+        export_df[col] = (
+            export_df[col]
+            .fillna('')
+            .astype(str)
+            .str.replace(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', regex=True)
+        )
+
+    # Use QUOTE_NONNUMERIC to ensure JSON fields with embedded quotes
+    # are properly wrapped, preventing _csv.Error on special characters.
+    export_df.to_csv(
+        output_path,
+        index=False,
+        quoting=csv.QUOTE_NONNUMERIC,
+    )
     size_mb = os.path.getsize(output_path) / (1024 * 1024)
     print(f'  Exported: {output_path} ({size_mb:.1f} MB)')
 
