@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Cannlytics
 Authors:
     Keegan Skeate <https://github.com/keeganskeate>
 Created: 8/24/2024
-Updated: 2/28/2026
+Updated: 3/10/2026
 License: CC-BY-4.0 <https://creativecommons.org/licenses/by/4.0/>
 
 Description:
@@ -496,19 +496,165 @@ class FlowDistributionCollector:
         wait = base * multiplier + jitter
         time.sleep(wait)
 
+    # ── Overlay Dismissal ────────────────────────────────────────
+
+    def _dismiss_cookie_consent(self) -> None:
+        """Dismiss the cookie consent banner by clicking 'Accept All'.
+
+        Flow Distribution uses a GDPR/cookie consent popup. We try
+        multiple strategies to click the acceptance button.
+        """
+        from selenium.webdriver.common.by import By
+
+        strategies = [
+            # CookieYes / Complianz style buttons.
+            lambda: self.driver.find_element(
+                By.CSS_SELECTOR,
+                'button.cmplz-btn.cmplz-accept, '
+                'a.cmplz-btn.cmplz-accept, '
+                '[data-cky-tag="accept-button"], '
+                'button[aria-label="Accept All"]',
+            ).click(),
+            # XPath text match.
+            lambda: self.driver.find_element(
+                By.XPATH,
+                '//button[contains(text(),"Accept All")]'
+                '|//a[contains(text(),"Accept All")]',
+            ).click(),
+            # JS sweep — click the first visible "Accept All".
+            lambda: self.driver.execute_script("""
+                var btns = document.querySelectorAll(
+                    'button, a, [role="button"]'
+                );
+                for (var i = 0; i < btns.length; i++) {
+                    if (btns[i].textContent.trim() === 'Accept All'
+                        && btns[i].offsetParent !== null) {
+                        btns[i].click();
+                        return true;
+                    }
+                }
+                return false;
+            """),
+        ]
+        for i, strategy in enumerate(strategies):
+            try:
+                strategy()
+                self.logger.info(
+                    f'Cookie consent dismissed (strategy {i + 1})'
+                )
+                time.sleep(1)
+                return
+            except Exception:
+                continue
+        self.logger.debug(
+            'No cookie consent banner found '
+            '(may already be dismissed)'
+        )
+
+    def _close_ad_popup(self, wait_seconds: int = 10) -> None:
+        """Close the Boxzilla newsletter popup ad.
+
+        IMPORTANT: The Boxzilla popup takes ~5 seconds to appear
+        after page load. This method uses an explicit WebDriverWait
+        to wait for the close icon to appear before clicking.
+
+        Target element:
+          <span class="boxzilla-close-icon"
+                aria-label="close">×</span>
+
+        Args:
+            wait_seconds: Max seconds to wait for the popup.
+        """
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import (
+            expected_conditions as EC,
+        )
+
+        # Wait for the Boxzilla popup to actually appear.
+        try:
+            WebDriverWait(self.driver, wait_seconds).until(
+                EC.presence_of_element_located((
+                    By.CSS_SELECTOR, 'span.boxzilla-close-icon',
+                ))
+            )
+        except Exception:
+            self.logger.debug(
+                f'Boxzilla popup did not appear within '
+                f'{wait_seconds}s'
+            )
+            # Still try JS cleanup in case it's hidden.
+            try:
+                self.driver.execute_script("""
+                    document.querySelectorAll(
+                        '[id^="boxzilla-"]'
+                    ).forEach(function(el) {
+                        el.style.display = 'none';
+                    });
+                """)
+            except Exception:
+                pass
+            return
+
+        # Now dismiss it.
+        strategies = [
+            # Direct CSS match on close icon.
+            lambda: self.driver.find_element(
+                By.CSS_SELECTOR, 'span.boxzilla-close-icon',
+            ).click(),
+            # aria-label fallback.
+            lambda: self.driver.find_element(
+                By.CSS_SELECTOR, '[aria-label="close"]',
+            ).click(),
+            # JS — click all close icons and force-hide.
+            lambda: self.driver.execute_script("""
+                document.querySelectorAll('.boxzilla-close-icon')
+                    .forEach(function(el) { el.click(); });
+                document.querySelectorAll('[id^="boxzilla-"]')
+                    .forEach(function(el) {
+                        el.style.display = 'none';
+                    });
+                var overlay = document.querySelector(
+                    '.boxzilla-overlay'
+                );
+                if (overlay) overlay.style.display = 'none';
+                return true;
+            """),
+        ]
+        for i, strategy in enumerate(strategies):
+            try:
+                strategy()
+                self.logger.info(
+                    f'Ad popup closed (strategy {i + 1})'
+                )
+                time.sleep(1)
+                return
+            except Exception:
+                continue
+        self.logger.debug('Failed to close ad popup')
+
     # ── Age Gate ─────────────────────────────────────────────────
 
     def _bypass_age_gate(self) -> bool:
         """Bypass the Flow Distribution age gate automatically.
 
-        The age gate typically appears as a form requiring the user
-        to enter their date of birth. This method tries multiple
-        strategies to fill in the form and submit.
+        The age gate is a WordPress "Age Gate" plugin form with:
+          - Input fields: #age-gate-m, #age-gate-d, #age-gate-y
+          - Form: form.age-gate__form
+          - Submit: button.age-gate__button
+            (type="submit", name="ag_settings[submit]", value="1")
+
+        Before interacting with the form, this method dismisses
+        overlapping cookie consent banners and the Boxzilla
+        newsletter popup (which takes ~5s to appear).
 
         Strategies:
-            1. Fill date-of-birth input fields (month/day/year).
-            2. Click submit/enter/verify buttons.
-            3. Use JavaScript to set cookies or bypass directly.
+            1. Dismiss overlays (cookie consent + ad popup).
+            2. Wait for age gate form, fill via specific IDs.
+            3. JavaScript fill + form.submit().
+            4. Generic form fill fallback.
+            5. Cookie injection + refresh.
+            6. Generic button click sweep.
 
         Returns:
             True if the age gate was successfully bypassed.
@@ -516,11 +662,20 @@ class FlowDistributionCollector:
         from selenium.webdriver.common.by import By
         from selenium.webdriver.common.keys import Keys
         from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.webdriver.support import (
+            expected_conditions as EC,
+        )
 
         self.logger.info('Navigating to Flow Distribution...')
         self.driver.get(BASE_URL)
-        time.sleep(5)
+        time.sleep(3)
+
+        # Dismiss cookie consent first (appears immediately).
+        self._dismiss_cookie_consent()
+
+        # Wait for and dismiss the Boxzilla ad popup.
+        # The ad takes ~5 seconds to appear after page load.
+        self._close_ad_popup(wait_seconds=10)
 
         page_source = self.driver.page_source.lower()
 
@@ -544,48 +699,174 @@ class FlowDistributionCollector:
 
         self.logger.info('Age gate detected, attempting bypass...')
 
-        # Strategy 1: Find and fill date inputs.
+        # Strategy 1: Wait for the age gate form to be present,
+        # then fill via the specific plugin element IDs.
+        try:
+            WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((
+                    By.ID, 'age-gate-m',
+                ))
+            )
+            m = self.driver.find_element(By.ID, 'age-gate-m')
+            d = self.driver.find_element(By.ID, 'age-gate-d')
+            y = self.driver.find_element(By.ID, 'age-gate-y')
+            m.clear()
+            m.send_keys(self.birth_month)
+            d.clear()
+            d.send_keys(self.birth_day)
+            y.clear()
+            y.send_keys(self.birth_year)
+
+            # Click the submit button. Use JS click as primary
+            # because overlays may intercept regular clicks.
+            btn = self.driver.find_element(
+                By.CSS_SELECTOR,
+                'button.age-gate__button',
+            )
+            self.driver.execute_script(
+                'arguments[0].click();', btn,
+            )
+            self.logger.info(
+                'Age gate form submitted via specific IDs'
+            )
+            time.sleep(3)
+
+            # Verify the form was removed from the DOM.
+            if not self.driver.find_elements(
+                By.CSS_SELECTOR, 'form.age-gate__form',
+            ):
+                self.logger.info(
+                    '✓ Age gate bypassed (form removed from DOM)'
+                )
+                return True
+            # Also check page source as fallback.
+            new_source = self.driver.page_source.lower()
+            if not any(
+                i in new_source for i in age_gate_indicators
+            ):
+                self.logger.info(
+                    '✓ Age gate bypassed (indicators gone)'
+                )
+                return True
+        except Exception as exc:
+            self.logger.debug(
+                f'Specific ID strategy failed: {exc}'
+            )
+
+        # Strategy 2: JavaScript fill + form.submit().
+        # Handles cases where Selenium send_keys doesn't trigger
+        # the Age Gate plugin's JS validation.
+        try:
+            success = self.driver.execute_script(f"""
+                var m = document.getElementById('age-gate-m');
+                var d = document.getElementById('age-gate-d');
+                var y = document.getElementById('age-gate-y');
+                if (!m || !d || !y) return false;
+                var setter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value'
+                ).set;
+                setter.call(m, '{self.birth_month}');
+                m.dispatchEvent(
+                    new Event('input', {{bubbles: true}})
+                );
+                m.dispatchEvent(
+                    new Event('change', {{bubbles: true}})
+                );
+                setter.call(d, '{self.birth_day}');
+                d.dispatchEvent(
+                    new Event('input', {{bubbles: true}})
+                );
+                d.dispatchEvent(
+                    new Event('change', {{bubbles: true}})
+                );
+                setter.call(y, '{self.birth_year}');
+                y.dispatchEvent(
+                    new Event('input', {{bubbles: true}})
+                );
+                y.dispatchEvent(
+                    new Event('change', {{bubbles: true}})
+                );
+                var form = document.querySelector(
+                    'form.age-gate__form'
+                );
+                if (form) {{ form.submit(); return true; }}
+                return false;
+            """)
+            if success:
+                self.logger.info(
+                    'Age gate submitted via JS form.submit()'
+                )
+                time.sleep(3)
+                new_source = self.driver.page_source.lower()
+                if not any(
+                    i in new_source for i in age_gate_indicators
+                ):
+                    self.logger.info(
+                        '✓ Age gate bypassed via JS form submit'
+                    )
+                    return True
+        except Exception as exc:
+            self.logger.debug(f'JS form submit failed: {exc}')
+
+        # Strategy 3: Generic form fill (fallback for plugin
+        # changes or other age gate implementations).
         try:
             success = self._fill_age_gate_form()
             if success:
                 time.sleep(3)
                 new_source = self.driver.page_source.lower()
-                if not any(i in new_source for i in age_gate_indicators):
-                    self.logger.info('✓ Age gate bypassed via form fill')
+                if not any(
+                    i in new_source for i in age_gate_indicators
+                ):
+                    self.logger.info(
+                        '✓ Age gate bypassed via generic form fill'
+                    )
                     return True
         except Exception as exc:
-            self.logger.debug(f'Form fill strategy failed: {exc}')
+            self.logger.debug(f'Generic form fill failed: {exc}')
 
-        # Strategy 2: Set age verification cookie via JS.
+        # Strategy 4: Set age verification cookies via JS.
         try:
             self.driver.execute_script("""
                 document.cookie = 'age_verified=1; path=/; max-age=86400';
                 document.cookie = 'age-verified=1; path=/; max-age=86400';
+                document.cookie = 'age_gate_verified=1; path=/; max-age=86400';
+                document.cookie = 'wp-age-gate=1; path=/; max-age=86400';
                 document.cookie = 'is_legal=1; path=/; max-age=86400';
                 document.cookie = 'birthdate=1992-04-12; path=/; max-age=86400';
-                localStorage.setItem('age_verified', 'true');
-                localStorage.setItem('agegate_passed', 'true');
+                try { localStorage.setItem('age_verified', 'true'); } catch(e) {}
+                try { localStorage.setItem('agegate_passed', 'true'); } catch(e) {}
             """)
             self.driver.refresh()
             time.sleep(5)
             new_source = self.driver.page_source.lower()
-            if not any(i in new_source for i in age_gate_indicators):
-                self.logger.info('✓ Age gate bypassed via cookie')
+            if not any(
+                i in new_source for i in age_gate_indicators
+            ):
+                self.logger.info(
+                    '✓ Age gate bypassed via cookie'
+                )
                 return True
         except Exception as exc:
             self.logger.debug(f'Cookie strategy failed: {exc}')
 
-        # Strategy 3: Click all "Enter" / "Yes" / "Submit" buttons.
+        # Strategy 5: Click any submit/enter/yes buttons.
         try:
             success = self._click_enter_buttons()
             if success:
                 time.sleep(3)
                 new_source = self.driver.page_source.lower()
-                if not any(i in new_source for i in age_gate_indicators):
-                    self.logger.info('✓ Age gate bypassed via button click')
+                if not any(
+                    i in new_source for i in age_gate_indicators
+                ):
+                    self.logger.info(
+                        '✓ Age gate bypassed via button click'
+                    )
                     return True
         except Exception as exc:
-            self.logger.debug(f'Button click strategy failed: {exc}')
+            self.logger.debug(
+                f'Button click strategy failed: {exc}'
+            )
 
         self.logger.warning(
             'Age gate bypass failed after all strategies. '
@@ -611,18 +892,27 @@ class FlowDistributionCollector:
         filled = False
 
         # Common selectors for age gate forms.
-        # Many age gate plugins use these patterns.
+        # Flow Distribution-specific selectors are listed first.
         selectors_month = [
+            '#age-gate-m',
+            'input[name="age_gate[m]"]',
+            'input.age-gate__input--month',
             'input[name*="month"]', 'input[placeholder*="MM"]',
             'input[id*="month"]', 'select[name*="month"]',
             'input[name*="mm"]', '#month',
         ]
         selectors_day = [
+            '#age-gate-d',
+            'input[name="age_gate[d]"]',
+            'input.age-gate__input--day',
             'input[name*="day"]', 'input[placeholder*="DD"]',
             'input[id*="day"]', 'select[name*="day"]',
             'input[name*="dd"]', '#day',
         ]
         selectors_year = [
+            '#age-gate-y',
+            'input[name="age_gate[y]"]',
+            'input.age-gate__input--year',
             'input[name*="year"]', 'input[placeholder*="YYYY"]',
             'input[id*="year"]', 'select[name*="year"]',
             'input[name*="yyyy"]', '#year',
@@ -727,6 +1017,36 @@ class FlowDistributionCollector:
             True if a button was clicked.
         """
         from selenium.webdriver.common.by import By
+
+        # Try the specific Age Gate plugin button first.
+        # Use JS click to bypass any overlay interference.
+        try:
+            btn = self.driver.find_element(
+                By.CSS_SELECTOR, 'button.age-gate__button',
+            )
+            self.driver.execute_script(
+                'arguments[0].click();', btn,
+            )
+            self.logger.debug('Clicked age-gate__button via JS')
+            return True
+        except Exception:
+            pass
+
+        # Also try the submit button by name attribute.
+        try:
+            btn = self.driver.find_element(
+                By.CSS_SELECTOR,
+                'button[name="ag_settings[submit]"]',
+            )
+            self.driver.execute_script(
+                'arguments[0].click();', btn,
+            )
+            self.logger.debug(
+                'Clicked ag_settings[submit] button via JS'
+            )
+            return True
+        except Exception:
+            pass
 
         button_texts = [
             'enter', 'submit', 'verify', 'yes',
@@ -919,12 +1239,37 @@ class FlowDistributionCollector:
             f'Starting COA discovery: {len(search_queries)} queries, '
             f'max {max_queries} per session'
         )
+
+        # Auto-reset: if the entire search space has been
+        # exhausted (all queries already searched), reset
+        # the tracker so we re-scan for newly posted COAs.
         if resume:
             already = len(tracker.searched)
-            self.logger.info(
-                f'Resuming: {already} queries already searched, '
-                f'{len(tracker.found)} COAs found so far'
+            remaining = sum(
+                1 for q in search_queries
+                if q not in tracker.searched
             )
+            if remaining == 0 and already > 0:
+                self.logger.info(
+                    f'All {already} queries previously searched '
+                    f'({len(tracker.found)} COAs found). '
+                    f'Resetting progress for re-scan...'
+                )
+                tracker.state['searched_queries'] = []
+                tracker.state['total_queries'] = 0
+                tracker.state['last_query'] = None
+                # Preserve found_coas so we don't re-download.
+                tracker.save()
+                self.logger.info(
+                    'Progress reset. Found COAs preserved '
+                    'to skip already-downloaded PDFs.'
+                )
+            else:
+                self.logger.info(
+                    f'Resuming: {already} queries already '
+                    f'searched, {remaining} remaining, '
+                    f'{len(tracker.found)} COAs found so far'
+                )
 
         for query in search_queries:
             # Check session limits.

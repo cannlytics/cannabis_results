@@ -5,7 +5,7 @@ Copyright (c) 2026 Cannlytics
 Authors:
     Keegan Skeate <https://github.com/keeganskeate>
 Created: 2/24/2026
-Updated: 2/24/2026
+Updated: 3/10/2026
 License: CC-BY-4.0 <https://creativecommons.org/licenses/by/4.0/>
 
 Description:
@@ -40,7 +40,12 @@ Description:
         Phase 1: Catalog existing local archive of COA PDFs.
         Phase 2: Discover COAs by enumerating numeric suffixes
                  via the MÜV search portal (Selenium-driven).
-        Phase 3: Download new COA PDFs from Treefersoft.
+                 PDFs are downloaded immediately upon discovery
+                 (download-on-discover) so that partial runs
+                 still yield downloaded COAs. This is critical
+                 for large sweeps (e.g., 5-digit / 100K queries)
+                 where a full enumeration may take days.
+        Phase 3: Re-catalog the archive to pick up new downloads.
         Phase 4: Convert manifest into standardized LabResult records.
 
     The algorithm includes resumption support — progress is tracked
@@ -90,6 +95,9 @@ Command Line:
 
     # Limit number of queries per session
     python algorithms/get_results_fl_muv.py --max-queries 500
+
+    # Disable immediate download (legacy: discover all, then download)
+    python algorithms/get_results_fl_muv.py --no-immediate-download
 
     # Custom directories
     python algorithms/get_results_fl_muv.py \\
@@ -1312,12 +1320,19 @@ class MuvCollector:
             max_queries: int = DEFAULT_MAX_QUERIES,
             resume: bool = True,
             headless: bool = True,
+            immediate_download: bool = True,
         ) -> pd.DataFrame:
         """Discover COAs by enumerating numeric suffixes.
 
         Systematically searches the MÜV portal with numeric
         suffixes of the specified digit length. Tracks progress
         for resumable collection across sessions.
+
+        When ``immediate_download=True`` (the default), each
+        discovered COA PDF is downloaded immediately before
+        continuing to the next suffix. This ensures that even
+        partial runs (e.g., interrupted after 2,000 of 100,000
+        queries) still yield all discovered PDFs on disk.
 
         Args:
             digits: Number of suffix digits (default: 4).
@@ -1330,10 +1345,12 @@ class MuvCollector:
             max_queries: Maximum queries per session.
             resume: If True, skip already-searched suffixes.
             headless: Run browser in headless mode.
+            immediate_download: If True, download each COA PDF
+                immediately upon discovery (default: True).
 
         Returns:
             DataFrame with discovered COA metadata:
-                suffix, batch_id, coa_url, discovered_at.
+                suffix, batch_id, coa_url, discovered_at, downloaded.
         """
         # Initialize progress tracker.
         tracker = ProgressTracker(str(self.progress_path))
@@ -1358,8 +1375,30 @@ class MuvCollector:
         # Enumerate suffixes.
         discovered = []
         queries_this_session = 0
+        downloads_this_session = 0
         consecutive_misses = 0
         max_consecutive_misses = 500  # Safety valve.
+
+        # ETA tracking.
+        session_start_time = time.monotonic()
+
+        # Pre-compute existing files on disk for skip-check.
+        existing_on_disk = set()
+        if self.pdf_dir.exists():
+            existing_on_disk = {
+                f.replace('.pdf', '')
+                for f in os.listdir(str(self.pdf_dir))
+                if f.lower().endswith('.pdf')
+            }
+
+        # Compute total remaining queries for ETA.
+        already_searched = tracker.searched if resume else set()
+        total_remaining = sum(
+            1 for n in range(start, end)
+            if str(n).zfill(digits) not in already_searched
+        )
+        # Cap at max_queries for ETA calculation.
+        total_remaining = min(total_remaining, max_queries)
 
         self.logger.info(
             f'Starting COA discovery: {digits}-digit suffixes, '
@@ -1419,6 +1458,29 @@ class MuvCollector:
             queries_this_session += 1
 
             if batch_id and coa_url:
+                # ── Immediate download ─────────────────────
+                # Download the PDF right now so that even if
+                # the session is interrupted, all discovered
+                # COAs are already on disk.
+                downloaded_path = None
+                if immediate_download:
+                    safe_id = _sanitize_batch_id(batch_id)
+                    if safe_id not in existing_on_disk:
+                        downloaded_path = self._download_coa(
+                            coa_url, batch_id,
+                        )
+                        if downloaded_path:
+                            downloads_this_session += 1
+                            existing_on_disk.add(safe_id)
+                            self._respectful_pause(
+                                base=self.download_pause,
+                                multiplier=0.5,
+                            )
+                    else:
+                        self.logger.debug(
+                            f'Already on disk: {safe_id}'
+                        )
+
                 discovered.append({
                     'suffix': suffix,
                     'batch_id': batch_id,
@@ -1427,6 +1489,8 @@ class MuvCollector:
                         coa_url,
                     ),
                     'discovered_at': datetime.now().isoformat(),
+                    'downloaded': downloaded_path is not None
+                        if immediate_download else False,
                 })
                 consecutive_misses = 0
             else:
@@ -1436,10 +1500,23 @@ class MuvCollector:
             # This ensures minimal data loss if Chrome crashes.
             if queries_this_session % 10 == 0:
                 tracker.save()
+
+                # ── ETA calculation ────────────────────────
+                elapsed = time.monotonic() - session_start_time
+                rate = queries_this_session / elapsed if elapsed > 0 else 0
+                remaining = total_remaining - queries_this_session
+                eta_secs = remaining / rate if rate > 0 else 0
+                eta_hours = eta_secs / 3600
+
                 self.logger.info(
-                    f'Progress: {queries_this_session} queries, '
-                    f'{len(discovered)} new COAs found '
-                    f'({len(tracker.found)} total)'
+                    f'Progress: {queries_this_session}'
+                    f'/{total_remaining} queries '
+                    f'({queries_this_session * 100 / total_remaining:.1f}%), '
+                    f'{len(discovered)} found '
+                    f'({downloads_this_session} downloaded), '
+                    f'{len(tracker.found)} total | '
+                    f'ETA: {eta_hours:.1f}h '
+                    f'({rate * 60:.0f} queries/min)'
                 )
 
             # Respectful pause between queries.
@@ -1450,10 +1527,16 @@ class MuvCollector:
 
         # Build DataFrame.
         df = pd.DataFrame(discovered)
+
+        # Session summary.
+        elapsed = time.monotonic() - session_start_time
+        elapsed_hours = elapsed / 3600
         self.logger.info(
-            f'Discovery complete: {queries_this_session} queries, '
+            f'Discovery complete: {queries_this_session} queries '
+            f'in {elapsed_hours:.1f}h, '
             f'{len(discovered)} new COAs found this session '
-            f'({len(tracker.found)} total across all sessions)'
+            f'({downloads_this_session} downloaded immediately), '
+            f'{len(tracker.found)} total across all sessions'
         )
 
         # Save discovered URLs snapshot.
@@ -1685,15 +1768,20 @@ class MuvCollector:
             headless: bool = True,
             save_results: bool = True,
             digits: int = DEFAULT_DIGITS,
+            start: Optional[int] = None,
+            end: Optional[int] = None,
             max_queries: int = DEFAULT_MAX_QUERIES,
             resume: bool = True,
+            immediate_download: bool = True,
         ) -> pd.DataFrame:
         """Execute the full collection pipeline.
 
         Phase 1: Catalog existing PDFs in the local archive.
-        Phase 2: Discover COAs via search enumeration.
-        Phase 3: Download new COA PDFs from Treefersoft.
-        Phase 4: Convert manifest to standardized LabResult records.
+        Phase 2: Discover COAs via search enumeration, downloading
+                 each PDF immediately upon discovery.
+        Phase 3: Catch-up download for any discovered-but-not-yet-
+                 downloaded COAs (e.g., from prior discover-only runs).
+        Phase 4: Re-catalog and convert to standardized LabResult records.
 
         Args:
             catalog_only: If True, only build the manifest.
@@ -1702,8 +1790,13 @@ class MuvCollector:
             headless: Run Selenium in headless mode.
             save_results: If True, save the results CSV.
             digits: Number of suffix digits for enumeration.
+            start: Starting suffix number (inclusive).
+            end: Ending suffix number (exclusive).
             max_queries: Maximum queries per session.
             resume: If True, skip already-searched suffixes.
+            immediate_download: If True (default), download each
+                COA PDF immediately upon discovery during Phase 2.
+                This makes partial runs productive.
 
         Returns:
             DataFrame with standardized lab result records.
@@ -1732,14 +1825,17 @@ class MuvCollector:
             )
             return results_df
 
-        # Phase 2: Discover COAs.
+        # Phase 2: Discover COAs (with immediate download).
         discovered = pd.DataFrame()
         if discover:
             discovered = self.discover_coas(
                 digits=digits,
+                start=start,
+                end=end,
                 max_queries=max_queries,
                 resume=resume,
                 headless=headless,
+                immediate_download=immediate_download and download,
             )
 
         # Also load all discovered COAs from progress tracker.
@@ -1756,14 +1852,52 @@ class MuvCollector:
                     for bid, url in all_found.items()
                 ])
 
-        # Phase 3: Download new COAs.
+        # Phase 3: Catch-up download for any COAs discovered
+        # in prior sessions that weren't downloaded yet.
         if download and len(all_discovered) > 0:
             existing_ids = set()
             if len(manifest) > 0 and 'batch_id' in manifest.columns:
                 existing_ids = set(
                     manifest['batch_id'].astype(str),
                 )
-            self.download_new_coas(all_discovered, existing_ids)
+            # Also check files on disk (may include immediate
+            # downloads from Phase 2 that aren't in the manifest).
+            on_disk = set()
+            if self.pdf_dir.exists():
+                on_disk = {
+                    f.replace('.pdf', '')
+                    for f in os.listdir(str(self.pdf_dir))
+                    if f.lower().endswith('.pdf')
+                }
+            skip_ids = existing_ids | on_disk
+            to_download = []
+            for _, row in all_discovered.iterrows():
+                bid = row.get('batch_id', '')
+                curl = row.get('coa_url', '')
+                if not bid or not curl:
+                    continue
+                safe = _sanitize_batch_id(bid)
+                if safe not in skip_ids:
+                    to_download.append((bid, curl))
+
+            if to_download:
+                self.logger.info(
+                    f'Catch-up: {len(to_download)} COA(s) '
+                    f'discovered but not yet downloaded'
+                )
+                catch_up = 0
+                for bid, curl in to_download:
+                    result = self._download_coa(curl, bid)
+                    if result:
+                        catch_up += 1
+                    self._respectful_pause(
+                        base=self.download_pause,
+                        multiplier=1.0,
+                    )
+                self.logger.info(
+                    f'Catch-up complete: {catch_up}'
+                    f'/{len(to_download)} downloaded'
+                )
 
             # Re-catalog after downloads.
             manifest = self.catalog_existing()
@@ -1782,6 +1916,13 @@ class MuvCollector:
             manifest['coa_url'] = manifest['batch_id'].map(
                 url_map,
             ).fillna(manifest.get('coa_url', ''))
+            # Suppress FutureWarning on fillna downcasting.
+            try:
+                manifest['coa_url'] = manifest[
+                    'coa_url'
+                ].infer_objects(copy=False)
+            except Exception:
+                pass
 
         # Phase 4: Convert to LabResult records.
         lab_results = self._convert_to_lab_results(manifest)
@@ -2100,6 +2241,14 @@ if __name__ == '__main__':
         help='Show the browser window (visible mode).',
     )
     parser.add_argument(
+        '--no-immediate-download',
+        action='store_true',
+        help=(
+            'Disable download-on-discover (revert to the '
+            'legacy discover-all-then-download behavior).'
+        ),
+    )
+    parser.add_argument(
         '--test',
         action='store_true',
         help='Run unit tests and exit.',
@@ -2132,8 +2281,11 @@ if __name__ == '__main__':
             download=not args.no_download,
             headless=not args.no_headless,
             digits=args.digits,
+            start=args.start,
+            end=args.end,
             max_queries=args.max_queries,
             resume=not args.no_resume,
+            immediate_download=not args.no_immediate_download,
         )
         print(f'Total results: {len(results)}')
         stats = collector.archive_stats()
