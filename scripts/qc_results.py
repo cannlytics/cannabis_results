@@ -5,7 +5,7 @@ Copyright (c) 2024-2026 Cannlytics
 Authors:
     Keegan Skeate <https://github.com/keeganskeate>
 Created: 2026-03-02
-Updated: 2026-03-09
+Updated: 2026-03-11
 License: MIT
 
 Description:
@@ -134,9 +134,9 @@ STATE_NAME_TO_CODE: Dict[str, str] = {
 # Strings treated as empty/missing (case-insensitive).
 SENTINEL_VALUES: Set[str] = {
     'nan', 'none', 'n/a', 'na', 'null', 'undefined', 'not available',
-    'not published', 'not disclosed', 'confidential', 'unavailable',
-    'unknown', 'tbd', 'to be determined', '-', '--', '---', '.',
-    '#n/a', '#ref!', '#value!', 'not applicable', 'no data',
+    'not provided', 'not published', 'not disclosed', 'confidential',
+    'unavailable', 'unknown', 'tbd', 'to be determined', '-', '--',
+    '---', '.', '#n/a', '#ref!', '#value!', 'not applicable', 'no data',
     'missing', 'inf', '-inf', '0.0', 'false',
 }
 
@@ -156,6 +156,9 @@ _PRODUCT_TYPES = {
         "cannabis (mmtc's) flower & plants",  # 207 records (FL MMTC)
         'enhanced/infused flowers',           # 60 records
         'flower - cured',                     # 50 records
+        # Non-canonical variants from validation (March 10, 2026):
+        'flower inhalable',                   # 6,358 records (FL — no comma variant)
+        "cannabis (mmtc's)",                  # 207 records (FL MMTC generic)
     ],
     'preroll': [
         'preroll', 'pre-roll', 'pre roll', 'joint', 'blunt',
@@ -186,6 +189,9 @@ _PRODUCT_TYPES = {
         'sugar wax',                        # 6 records
         'concentrates &',                   # 1 record (truncated)
         'batter/badder',                    # 1 record
+        # Non-canonical variants from validation (March 10, 2026):
+        'derivative inhalable',             # 2,075 records (FL)
+        'solvent based concentrate/extract', # 146 records
     ],
     'vape': [
         'vape', 'cartridge', 'cart', 'vaporizer', 'pod',
@@ -194,6 +200,9 @@ _PRODUCT_TYPES = {
         # Non-canonical variants from validation (March 9, 2026):
         'inhalation',                 # 6 records
         '(inhalation - heated)',      # 2 records
+        # Non-canonical variants from validation (March 10, 2026):
+        'inhalable/vape concentrate',         # 443 records (FL)
+        'formulated vape oil',                # 1 record
     ],
     'edible': [
         'edible', 'gummy', 'gummies', 'chocolate', 'beverage',
@@ -208,6 +217,15 @@ _PRODUCT_TYPES = {
         'soft chew',                  # 177 records
         'infused, concentrated liquid edible',  # 8 records
         'oral',                           # 1 record (oral dosage form)
+        # Non-canonical variants from validation (March 10, 2026):
+        'edibles',                            # 906 records (plural variant)
+        'derivative non-inhalable',           # 467 records (FL)
+        'softchew',                           # 1 record
+        'hard lozenge',                       # 1 record
+        'exempt edible',                      # 20 records
+        'stability t1 (edibles)',             # 56 records (stability test on edible)
+        'stability t2 (edibles)',             # 86 records
+        'stability t3 (edibles)',             # 1 record
     ],
     'tincture': [
         'tincture', 'oil', 'drops', 'sublingual', 'oral solution',
@@ -223,6 +241,8 @@ _PRODUCT_TYPES = {
         'infused, non-inhalable',     # 1 record
         # Non-canonical variants from validation (March 9, 2026):
         'infused, topical',           # 4 records
+        # Non-canonical variants from validation (March 10, 2026):
+        'transdermal patch',          # 2 records
     ],
 }
 for canonical, variants in _PRODUCT_TYPES.items():
@@ -232,6 +252,20 @@ for canonical, variants in _PRODUCT_TYPES.items():
 # Additional product type mappings that don't fit a canonical category.
 # These map to non-canonical but accepted labels (e.g., "other").
 PRODUCT_TYPE_MAP['environmental'] = 'other'  # 42 records (monitoring samples)
+
+# Non-canonical variants from validation (March 10, 2026):
+# -- Stability testing categories (not a product type per se) --
+PRODUCT_TYPE_MAP['stability t0'] = 'other'        # 2 records
+PRODUCT_TYPE_MAP['stability t1'] = 'other'        # 431 records
+PRODUCT_TYPE_MAP['stability t2'] = 'other'        # 664 records
+PRODUCT_TYPE_MAP['stability t3'] = 'other'        # 8 records
+# -- R&D / retest categories --
+PRODUCT_TYPE_MAP['r&d testing'] = 'other'         # 262 records
+PRODUCT_TYPE_MAP['r&d testing (raw plant material & concentrate/extract)'] = 'other'  # 175
+PRODUCT_TYPE_MAP['r&d testing (infused products)'] = 'other'  # 9 records
+PRODUCT_TYPE_MAP['retest'] = 'other'              # 6 records
+# -- Sentinel / garbage values --
+PRODUCT_TYPE_MAP['0'] = ''                        # 5 records (blank sentinel)
 
 # Status normalization map.
 STATUS_MAP: Dict[str, str] = {
@@ -453,6 +487,12 @@ ANALYSIS_NAME_NORMALIZATION: Dict[str, str] = {
     'heavy metals by icpms': 'heavy_metals',
     'micro by petri & qpcr': 'microbials',
     'micro by petri and qpcr': 'microbials',
+    # ── Non-canonical analysis variants (March 10, 2026) ──────────
+    # These 4 types appeared in the 89,100-record validation run.
+    'residual_solvent_analysis': 'residual_solvents',   # 2 records
+    'wateractivity': 'moisture_foreign_matter',          # 1 record
+    'gcms pesticides': 'pesticides',                     # 1 record
+    'lcms pesticides': 'pesticides',                     # 1 record
 }
 
 # Date formats to try when parsing.
@@ -812,12 +852,33 @@ def normalize_product_types(df: pd.DataFrame, report: QCReport) -> pd.DataFrame:
         s = str(val).strip().lower()
         if s in SENTINEL_VALUES or s == '':
             return ''
-        return PRODUCT_TYPE_MAP.get(s, s)
+        # Direct lookup first.
+        mapped = PRODUCT_TYPE_MAP.get(s)
+        if mapped is not None:
+            return mapped
+        # Artifact: metadata leaked into product_type field.
+        # Patterns: "metrc id: ...", "plant harvest date: ...",
+        #           "raw single serving unit sample received: ...",
+        #           "flower - cured sample received: ..."
+        if any(s.startswith(p) for p in (
+            'metrc id:', 'plant harvest date:', 'raw single serving unit',
+        )):
+            return ''
+        if 'sample received:' in s:
+            return ''
+        # Artifact: comma-delimited "type, inhalable, strain_name".
+        # Extract the first token and try to map it.
+        if ',' in s:
+            first_token = s.split(',')[0].strip()
+            mapped_first = PRODUCT_TYPE_MAP.get(first_token)
+            if mapped_first is not None:
+                return mapped_first
+        return s
 
     cleaned = df[col].apply(_normalize_pt)
     changed = (original.fillna('').astype(str).str.lower() != cleaned)
     n_changed = changed.sum()
-    known_types = set(_PRODUCT_TYPES.keys())
+    known_types = set(_PRODUCT_TYPES.keys()) | {'other'}
     non_standard_mask = ~cleaned.isin(known_types) & (cleaned != '')
     if non_standard_mask.any():
         unknown = cleaned[non_standard_mask].value_counts().head(10).to_dict()
